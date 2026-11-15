@@ -1,0 +1,105 @@
+{
+  "project": "JalRakshak Edge AI Water Quality Node",
+  "version": "2.0.0",
+  "mcu": "ESP32-WROOM-32",
+  "adc_resolution_bits": 12,
+  "adc_voltage_reference_v": 3.3,
+  "adc_attenuation": "ADC_11db",
+  "sensors": {
+    "temperature": {
+      "model": "DS18B20",
+      "interface": "1-Wire Digital",
+      "gpio_pin": 4,
+      "pullup_resistor_ohms": 4700,
+      "measurement_range_c": [-55.0, 125.0],
+      "accuracy_c": 0.5,
+      "fallback_temperature_c": 25.0,
+      "purpose": "Primary water temperature and dynamic thermal compensation across electrochemical channels"
+    },
+    "tds": {
+      "model": "DT0530 Analog TDS Sensor",
+      "interface": "ADC1 Channel 6",
+      "gpio_pin": 34,
+      "power_supply_v": 3.3,
+      "output_voltage_range_v": [0.0, 2.3],
+      "temperature_compensation": {
+        "reference_temp_c": 25.0,
+        "temp_coefficient_per_c": 0.02,
+        "formula": "V_comp = V_raw / (1.0 + 0.02 * (T_c - 25.0))"
+      },
+      "transfer_function": {
+        "type": "cubic_polynomial",
+        "formula": "tds_ppm = (133.42 * V_comp^3 - 255.86 * V_comp^2 + 857.39 * V_comp) * 0.5",
+        "coefficients": {
+          "c3": 133.42,
+          "c2": -255.86,
+          "c1": 857.39,
+          "scale_factor": 0.5
+        }
+      },
+      "reference_checkpoints": [
+        { "solution": "Distilled Water", "tds_ppm": 0.0, "nominal_v": 0.02 },
+        { "solution": "342 ppm NaCl standard", "tds_ppm": 342.0, "nominal_v": 0.98 },
+        { "solution": "707 ppm NaCl standard", "tds_ppm": 707.0, "nominal_v": 1.54 },
+        { "solution": "1000 ppm NaCl standard", "tds_ppm": 1000.0, "nominal_v": 1.92 }
+      ]
+    },
+    "turbidity": {
+      "model": "TS-300B Optical Turbidity Sensor",
+      "interface": "ADC1 Channel 0",
+      "gpio_pin": 36,
+      "gpio_label": "VP",
+      "power_supply_v": 5.0,
+      "voltage_divider_ratio": 1.0,
+      "clean_water_baseline_v": 4.15,
+      "transfer_function": {
+        "type": "quadratic_polynomial",
+        "formula": "NTU = -1120.4 * V^2 + 5742.3 * V - 4352.9",
+        "clamping_min_ntu": 0.0,
+        "clamping_max_ntu": 3000.0,
+        "clean_cutoff_v": 3.80,
+        "mud_cutoff_v": 2.20
+      },
+      "reference_checkpoints": [
+        { "condition": "Clean RO/Municipal Tap Water", "expected_ntu": 0.5, "nominal_v": 4.10 },
+        { "condition": "Slight Haze (Borderline IS 10500)", "expected_ntu": 5.0, "nominal_v": 3.52 },
+        { "condition": "Cloudy Well / River Water", "expected_ntu": 25.0, "nominal_v": 2.95 },
+        { "condition": "Heavy Monsoon Mud", "expected_ntu": 150.0, "nominal_v": 2.10 }
+      ]
+    },
+    "ph": {
+      "model": "PH-4502C BNC Electrode Module",
+      "interface": "ADC1 Channel 7",
+      "gpio_pin": 35,
+      "power_supply_v": 5.0,
+      "neutral_reference_v": 2.50,
+      "nominal_slope_v_per_ph": 0.180,
+      "transfer_function": {
+        "type": "nernstian_linear_with_temperature",
+        "formula": "pH = 7.00 + (V_neutral - V_raw) / (Slope_25 * (T_c + 273.15) / 298.15)",
+        "voltage_at_ph_7_0": 2.50,
+        "slope_at_25c": 0.180
+      },
+      "reference_checkpoints": [
+        { "buffer": "pH 4.01 Acid Buffer", "expected_ph": 4.01, "nominal_v": 3.04 },
+        { "buffer": "pH 7.00 Neutral Buffer", "expected_ph": 7.00, "nominal_v": 2.50 },
+        { "buffer": "pH 9.18 Alkaline Buffer", "expected_ph": 9.18, "nominal_v": 2.11 }
+      ]
+    }
+  },
+  "guardrails": {
+    "standard": "BIS IS 10500:2012 Drinking Water Specification",
+    "acceptable_limits": {
+      "ph_min": 6.5,
+      "ph_max": 8.5,
+      "tds_max_ppm": 500.0,
+      "turbidity_max_ntu": 5.0
+    },
+    "permissible_limits_in_absence_of_alternate_source": {
+      "ph_min": 6.5,
+      "ph_max": 8.5,
+      "tds_max_ppm": 2000.0,
+      "turbidity_max_ntu": 5.0
+    }
+  }
+}

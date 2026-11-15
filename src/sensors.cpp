@@ -1,4 +1,5 @@
 #include "sensors.h"
+#include "calibration_curves.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <math.h>
@@ -91,55 +92,23 @@ void sensors_read(WaterTelemetry &telemetry, bool simSpikeActive) {
   }
 
   // --------------------------------------------------------------------------
-  // 3. ANALOG TDS (Temperature-Compensated Polynomial)
+  // 3. ANALOG TDS (Temperature-Compensated Polynomial via calibration_curves.h)
   // --------------------------------------------------------------------------
   telemetry.rawTdsV = sensors_read_adc_voltage(PIN_TDS, 32);
-  // Temperature compensation formula (2%/°C standard reference at 25°C)
-  float compFactor = 1.0f + 0.02f * (telemetry.tempC - 25.0f);
-  float compVoltage = telemetry.rawTdsV / compFactor;
-
-  // Standard TDS curve mapping: 0.5 factor relates EC (µS/cm) to TDS (ppm)
-  float rawPpm = (133.42f * powf(compVoltage, 3) - 
-                  255.86f * powf(compVoltage, 2) + 
-                  857.39f * compVoltage) * 0.5f;
-  
-  rawPpm -= g_tdsZeroOffset;
-  if (rawPpm < 0.0f) rawPpm = 0.0f;
-  telemetry.tdsPpm = rawPpm;
+  telemetry.tdsPpm = calc_tds_ppm(telemetry.rawTdsV, telemetry.tempC, g_tdsZeroOffset);
 
   // --------------------------------------------------------------------------
-  // 4. ANALOG TURBIDITY (TS-300B Sensor Curve)
+  // 4. ANALOG TURBIDITY (TS-300B Sensor Curve via calibration_curves.h)
   // --------------------------------------------------------------------------
   telemetry.rawTurbV = sensors_read_adc_voltage(PIN_TURBIDITY, 32);
-  float tV = telemetry.rawTurbV;
-
-  // TS-300B Voltage to NTU Transfer Equation:
-  // Clean water gives ~3.5V to 4.2V (low NTU). Cloudy water gives lower voltage.
-  float ntu = 0.0f;
-  if (tV >= 3.80f) {
-    ntu = 0.5f; // Crystal clear drinking water
-  } else if (tV <= 2.20f) {
-    ntu = 100.0f; // Extremely turbid / mud
-  } else {
-    // Polynomial characteristic curve for TS-300B
-    ntu = -1120.4f * (tV * tV) + 5742.3f * tV - 4353.8f;
-    if (ntu < 0.0f) ntu = 0.0f;
-  }
-
-  ntu -= g_turbZeroOffset;
-  if (ntu < 0.0f) ntu = 0.0f;
-  telemetry.turbNTU = ntu;
+  telemetry.turbNTU = calc_turbidity_ntu(telemetry.rawTurbV, g_turbZeroOffset);
 
   // --------------------------------------------------------------------------
-  // 5. ANALOG pH (D35 Po Pin or Neutral 7.10 Fallback)
+  // 5. ANALOG pH (D35 Po Pin or Neutral 7.10 Fallback via calibration_curves.h)
   // --------------------------------------------------------------------------
   telemetry.rawPhV = sensors_read_adc_voltage(PIN_PH, 32);
 #if PH_SENSOR_CONNECTED
-  // Standard pH probe transfer curve: 2.5V is pH 7.0 neutral, 0.18V per pH unit
-  float calculatedPh = 7.0f + ((2.50f - telemetry.rawPhV) / 0.18f);
-  if (calculatedPh < 0.0f)  calculatedPh = 0.0f;
-  if (calculatedPh > 14.0f) calculatedPh = 14.0f;
-  telemetry.pH = calculatedPh;
+  telemetry.pH = calc_ph(telemetry.rawPhV, telemetry.tempC);
 #else
   // Default to neutral drinking water baseline with subtle analog noise realism
   telemetry.pH = PH_DEFAULT_VALUE;
