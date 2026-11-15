@@ -6,6 +6,7 @@
 
 ## 🌟 Key Features
 
+- **Comprehensive Technical Documentation:** See the complete architectural guide in [SYSTEM_OVERVIEW.md](file:///c:/Users/soham/OneDrive/Documents/CPP%20sem%205/JalRakshak_Node/SYSTEM_OVERVIEW.md) and bench calibration in [CALIBRATION_GUIDE.md](file:///c:/Users/soham/OneDrive/Documents/CPP%20sem%205/JalRakshak_Node/docs/CALIBRATION_GUIDE.md).
 - **FreeRTOS Dual-Core Architecture:**
   - **Core 0:** Multi-sample ADC1 filtering (32-sample averaging), temperature-compensated TDS, TS-300B turbidity polynomial modeling, and 4→16→12→3 TinyML anomaly inference ($< 350\text{ }\mu\text{s}$ latency).
   - **Core 1:** Smooth $\approx 30\text{ FPS}$ flicker-free UI rendering, compact sprite animations, and edge-triggered touch processing.
