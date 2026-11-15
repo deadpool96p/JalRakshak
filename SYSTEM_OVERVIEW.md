@@ -50,6 +50,10 @@ The system combines a **4→16→12→3 Multilayer Perceptron (MLP)** trained on
 | **Analog TDS** | `TDS_AOUT` | **GPIO 34** | `D34` | Input | ADC1_CH6 (0 – 2.3V linear output, 3.3V powered direct) |
 | **TS-300B Turbidity**| `TURB_AOUT` | **GPIO 36** | `VP` | Input | ADC1_CH0 via **10 kΩ + 20 kΩ divider** (1.50× scale, 5V safe) |
 | **PH-4502C pH** | `PH_PO` | **GPIO 35** | `D35` | Input | ADC1_CH7 via **10 kΩ + 20 kΩ divider** (1.50× scale, 5V safe) |
+| **Status LED Green** | `LED_GREEN` | **GPIO 33** | `D33` | Output | Safe status (Solid on Drinkable, 600ms alt on Caution) |
+| **Status LED Red** | `LED_RED` | **GPIO 32** | `D32` | Output | Alert status (Rapid 200ms flash on Contaminated) |
+| **Activity LED Blue**| `LED_BLUE` | **GPIO 27** | `D27` | Output | TinyML 40ms pulse & Web request double-pulse |
+| **PAM8403 DAC Audio**| `DAC_AUDIO` | **GPIO 25** | `D25` | Output | Hardware DAC1 8-bit output, zero idle hiss (0V at idle) |
 | **Backlight Control**| `TFT_LED / BLK`| **GPIO 22** | `D22` | Output | 5 kHz 8-bit Hardware PWM (Duty 75 – 255) |
 | **Display SPI Clock**| `TFT_SCLK` | **GPIO 18** | `D18` | Output | Hardware VSPI SCK (27 MHz display / 1 MHz touch) |
 | **Display SPI MOSI** | `TFT_MOSI` | **GPIO 23** | `D23` | Output | Hardware VSPI MOSI (Master Out Slave In) |
@@ -61,7 +65,7 @@ The system combines a **4→16→12→3 Multilayer Perceptron (MLP)** trained on
 | **Touch Clock** | `T_CLK` | **GPIO 18** | `D18` | Output | Shared hardware VSPI clock line |
 | **Touch Data In** | `T_DIN` | **GPIO 23** | `D23` | Output | Shared hardware VSPI MOSI line |
 | **Touch Data Out** | `T_DO` | **GPIO 19** | `D19` | Input | Shared hardware VSPI MISO line |
-| **Module Power 1** | `VCC_5V` | `VIN` | `5V` | Power Out | 5.0V DC from USB to power TS-300B & PH-4502C |
+| **Module Power 1** | `VCC_5V` | `VIN` | `5V` | Power Out | 5.0V DC from USB to power TS-300B, PH-4502C & PAM8403 |
 | **Module Power 2** | `VCC_3V3` | `3V3` | `3.3V` | Power Out | 3.3V DC to power DS18B20 & DT0530 TDS |
 | **Common Ground** | `GND` | `GND` | `GND` | Ground | Common system ground rail across all modules |
 
@@ -485,7 +489,71 @@ All user settings and sensor calibration baselines are persisted in the dedicate
 
 ---
 
-## 12. Repository Directory Structure
+## 12. Hardware Status & Processing LEDs (GPIO 33, 32, 27)
+
+To allow quick, at-a-glance field inspection without reading the TFT screen, JalRakshak incorporates three dedicated status and activity LEDs driven by a non-blocking `millis()` state machine running every 20ms on Core 0:
+
+| LED Color | ESP32 Pin | Logic & Flash Cadence | Indicated Operational State |
+| :--- | :--- | :--- | :--- |
+| **Green LED** | **GPIO 33** (`D33`) | Solid `HIGH` | **Drinkable / Safe Water (`CLASS_SAFE`):** All parameters within BIS IS 10500 limits. |
+| **Green / Red Alternating** | **GPIO 33 & 32** | Slow alternating blink (`600 ms` period) | **Caution / Parameter Drift (`CLASS_CAUTION`):** Parameter approaching standard threshold. |
+| **Red LED** | **GPIO 32** (`D32`) | Rapid emergency flash (`200 ms` toggle) | **Contaminated / Health Hazard (`CLASS_CONTAMINATED`):** Critical chemical or particulate breach. |
+| **Blue LED** | **GPIO 27** (`D27`) | Crisp `40 ms` pulse / double-pulse | **Edge AI Inference & Wi-Fi Activity:** Pulses on every Core 0 TinyML pass, and emits a double-pulse on web client commands. |
+
+---
+
+## 13. PAM8403 DAC Audio & Voice Alert Engine (GPIO 25)
+
+### 13.1 Hardware Architecture & Zero-Hiss DAC Output
+JalRakshak routes its audio signal through ESP32 **Hardware DAC1 (`GPIO 25` / `D25`)** feeding a low-noise PAM8403 Class-D stereo amplifier connected to dual $8\,\Omega$ speakers:
+- **Zero DC Speaker Bias & Zero Idle Hiss:** Conventional PWM audio leaves residual DC voltage on the amplifier input, causing continuous background hiss and speaker coil heating. JalRakshak directly invokes `dacWrite(PIN_DAC_AUDIO, 0)` immediately upon tone completion, ensuring absolute silence when idle.
+- **Asynchronous FreeRTOS Task:** Audio synthesis runs in an independent FreeRTOS worker task (`audioTask`, 3072-byte stack), fed by a message queue (`g_audioQueue`). Sound playback never blocks high-speed ADC sampling or 30 FPS UI animations.
+
+### 13.2 Melodic Alert Profiles & Anti-Spam Guard
+- **Startup Chime:** 4-note ascending major arpeggio ($C_5 \rightarrow E_5 \rightarrow G_5 \rightarrow C_6$).
+- **Safe Water Confirmation:** Dual-tone harmonic bell ($G_5 \rightarrow C_6$).
+- **Contaminated Emergency Alarm:** 3 bursts of dual-frequency alternating siren ($880\text{ Hz} \leftrightarrow 1320\text{ Hz}$).
+- **Anti-Spam Cooldown:** Contaminated alarms are gated by a **15-second cooldown timer**, preventing continuous siren looping during edge-case water oscillations.
+- **Hardware & Web Mute Toggle:** Both the TFT (`VW:RAW`) screen and the Web Dashboard feature an `AUDIO: ON / MUTE` toggle persisted in Flash NVS (`"audMute"`).
+
+---
+
+## 14. Offline Wi-Fi SoftAP, Captive Portal & Web Dashboard
+
+### 14.1 Network Configuration & RF Interference Protection
+For field verification where mobile phones or tablets are used by testing teams, JalRakshak broadcasts a local Wi-Fi Access Point requiring zero external routers or internet access:
+- **SSID:** `JalRakshak-Node`
+- **Password:** `jalrakshak123`
+- **Default IP:** `http://192.168.4.1`
+- **mDNS Hostname:** `http://jalrakshak.local`
+- **Captive Portal:** Built-in DNS server (port 53) intercepts all requests (`/generate_204`, `/hotspot-detect.html`, `/fwlink`) and automatically redirects connected smartphones to the dashboard.
+- **Low RF Power Setting (`11 dBm`):** Configured via `WiFi.setTxPower(WIFI_POWER_11dBm)` to prevent RF current bursts from coupling into sensitive high-impedance ADC1 sensor inputs or causing 5V rail brownouts during audio alarms.
+
+### 14.2 Single-Page PROGMEM Web Dashboard
+Served directly from internal ESP32 Flash memory (`<WebServer.h>`):
+- **Hero Status Banner:** Instant color-coded water quality assessment matching IS 10500 standards.
+- **Live 4-Parameter Grid:** Real-time displays for pH, TDS, Turbidity, and Temperature with raw voltage sub-labels and standby detection.
+- **TinyML Classifier Visualizer:** Real-time Softmax probability distribution bars and microsecond latency timer.
+- **HTML5 Multi-Parameter Canvas Chart:** 60-second rolling graph tracking contamination risk and TDS trends.
+- **CSV Data Export:** One-click **"Download CSV Log"** button that exports timestamped browser-recorded telemetry directly to mobile or PC.
+- **Bi-Directional Remote Controls:** Instant toggles for Mode (`LIVE / SIM SPIKE`), Language, Brightness, Audio Mute, and Zero Calibration (`CAL / ZERO`), updating the physical TFT display in real time.
+
+---
+
+## 15. Dual-Breadboard Wire-Management & Power Distribution
+
+To maintain clean analog signals and avoid ground loops:
+1. **Power Rail Separation:**
+   - **5.0V Rail (`VIN`):** Supplies the TS-300B Turbidity sensor, PH-4502C pH module, and PAM8403 audio amplifier.
+   - **3.3V Rail (`3V3`):** Supplies the DS18B20 temperature probe, DT0530 TDS sensor, and ILI9341 display logic.
+2. **Star Grounding:**
+   - Connect the ground pins of the TS-300B and PH-4502C voltage dividers directly to the ESP32 `GND` rail to minimize return-current offset errors.
+3. **Resistor Dividers:**
+   - Place the $10\text{ k}\Omega$ and $20\text{ k}\Omega$ resistors close to the ESP32 input pins (`VP` and `D35`) to reduce RF noise pickup on high-impedance traces.
+
+---
+
+## 16. Repository Directory Structure
 
 ```
 JalRakshak_Node/
@@ -506,14 +574,18 @@ JalRakshak_Node/
 │   └── train_and_export_tinyml.py       # Trains MLP, computes confusion matrix & exports header
 │
 └── src/
-    ├── main.cpp                 # FreeRTOS setup, dual-core task pinning, mutex synchronization
-    ├── sensors.h / .cpp         # Multi-sample filtering, temperature compensation, calibration
+    ├── main.cpp                 # Fast 20ms scheduler, FreeRTOS tasks, mutex synchronization
+    ├── sensors.h / .cpp         # Trimmed-mean eFuse ADC1 filtering, 5V scaling, NVS offsets
     ├── calibration_curves.h     # Verified mathematical transfer equations for all 4 sensors
     ├── water_model.h            # Pre-trained weights, normalization constants & TFLite model array
     ├── tinyml_engine.h / .cpp   # 4->16->12->3 MLP inference engine + IS 10500 safety guardrail
     ├── ui_manager.h / .cpp      # 120x86 sprite waveform, 4 parameter cards & touch engine
+    ├── status_leds.h / .cpp     # Hardware Status LEDs (GPIO 33 Green, 32 Red, 27 Blue)
+    ├── audio_alerts.h / .cpp    # PAM8403 Hardware DAC1 Audio Engine with zero idle hiss
+    ├── web_dashboard.h          # SoftAP & Web Dashboard header interface
+    ├── web_server.cpp           # Captive Portal & PROGMEM single-page mobile/PC web app
     └── lang_assets.h            # 1-bit monochrome Devanagari typography bitmaps
 ```
 
 ---
-*Document Version: 2.1.0 — JalRakshak Edge AI Water Safety Project.*
+*Document Version: 2.2.0 — JalRakshak Edge AI Water Safety Project.*

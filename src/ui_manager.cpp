@@ -1,5 +1,6 @@
 #include "ui_manager.h"
 #include "lang_assets.h"
+#include "audio_alerts.h"
 #include <SPI.h>
 #include <Preferences.h>
 #include <esp_arduino_version.h>
@@ -529,14 +530,22 @@ static void renderRawView(const WaterTelemetry &telemetry) {
   tft.setCursor(166, 119);
   tft.printf("LANG: %s (Tap)", (currentLang == LANG_EN) ? "ENGLISH" : (currentLang == LANG_HI) ? "HINDI" : "MARATHI");
 
-  // 3. Dedicated Recalibrate Touch Button (x: 14, y: 142, w: 290, h: 24)
-  tft.fillRoundRect(14, 142, 290, 24, 3, UI_COLOR_BG);
-  tft.drawRoundRect(14, 142, 290, 24, 3, UI_COLOR_ALERT);
+  // 3. Dedicated Recalibrate Touch Button (x: 14 to 196, y: 142 to 164)
+  tft.fillRoundRect(14, 142, 182, 22, 3, UI_COLOR_BG);
+  tft.drawRoundRect(14, 142, 182, 22, 3, UI_COLOR_ALERT);
   tft.setTextColor(UI_COLOR_ALERT, UI_COLOR_BG);
-  tft.setCursor(68, 149);
-  tft.print("RECAL TOUCH (Tap to Calibrate)");
+  tft.setCursor(20, 148);
+  tft.print("RECAL TOUCH (Tap)");
 
-  // 4. Calibration Offsets & Reset Button (x: 14 to 304, y: 168 to 188)
+  // 4. Audio Alert Mute Toggle Button (x: 202 to 304, y: 142 to 164)
+  bool muted = audio_is_muted();
+  tft.fillRoundRect(202, 142, 102, 22, 3, UI_COLOR_BG);
+  tft.drawRoundRect(202, 142, 102, 22, 3, muted ? UI_COLOR_ALERT : UI_COLOR_CYAN);
+  tft.setTextColor(muted ? UI_COLOR_ALERT : UI_COLOR_CYAN, UI_COLOR_BG);
+  tft.setCursor(210, 148);
+  tft.printf("AUD: %s", muted ? "MUTE" : "ON (Tap)");
+
+  // 5. Calibration Offsets & Reset Button (x: 14 to 304, y: 168 to 188)
   tft.setTextColor(UI_COLOR_SAFE, UI_COLOR_CARD);
   tft.setCursor(14, 173);
   tft.printf("Offsets: TDS=%.0f | Turb=%.1f", telemetry.tdsOffset, telemetry.turbOffset);
@@ -839,14 +848,20 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
         ui_cycle_language();
         return;
       }
-      // Recalibrate Touch Button (x: 14 to 304, y: 140 to 166)
-      else if (tx >= 14 && tx <= 304 && ty >= 140 && ty <= 166) {
-        tft.fillRoundRect(14, 142, 290, 24, 3, UI_COLOR_ALERT);
+      // Recalibrate Touch Button (x: 14 to 196, y: 140 to 166)
+      else if (tx >= 14 && tx <= 196 && ty >= 140 && ty <= 166) {
+        tft.fillRoundRect(14, 142, 182, 22, 3, UI_COLOR_ALERT);
         tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_ALERT);
-        tft.setCursor(68, 149);
-        tft.print("ENTERING CALIBRATION...");
+        tft.setCursor(20, 148);
+        tft.print("CALIBRATING...");
         delay(120);
         ui_run_touch_calibration();
+        return;
+      }
+      // Audio Alert Mute Toggle Button (x: 200 to 306, y: 140 to 166)
+      else if (tx >= 200 && tx <= 306 && ty >= 140 && ty <= 166) {
+        audio_toggle_mute();
+        renderRawView(telemetry);
         return;
       }
       // Reset Offsets Button in RAW view (x: 230 to 306, y: 166 to 190)
