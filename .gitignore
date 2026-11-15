@@ -1,0 +1,12 @@
+# PlatformIO Build & Lib Directories
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# IDE Configuration
+.vscode/
+compile_commands.json
