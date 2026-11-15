@@ -113,6 +113,13 @@ static void audioTask(void *pvParameters) {
           play_tone(1318.51f, 100, 240, true);
           break;
 
+        case SOUND_LOW_BATTERY:
+          // Low-battery descending double-beep
+          play_tone(783.99f, 80, 220, true);
+          vTaskDelay(pdMS_TO_TICKS(50));
+          play_tone(523.25f, 120, 220, true);
+          break;
+
         default:
           break;
       }
@@ -132,7 +139,11 @@ void audio_init() {
   // Load Persisted Audio Mute Setting from NVS
   Preferences prefs;
   if (prefs.begin("jalrakshak", true)) {
-    g_audioMuted = prefs.getBool("audMute", false);
+    if (prefs.isKey("muted")) {
+      g_audioMuted = prefs.getBool("muted", false);
+    } else {
+      g_audioMuted = prefs.getBool("audMute", false);
+    }
     prefs.end();
   }
 
@@ -180,6 +191,10 @@ void audio_play_test() {
   audio_play_sound(SOUND_TEST);
 }
 
+void audio_play_low_battery() {
+  audio_play_sound(SOUND_LOW_BATTERY);
+}
+
 void audio_update_state(int newStatus) {
   uint32_t now = millis();
 
@@ -208,6 +223,7 @@ bool audio_toggle_mute() {
 
   Preferences prefs;
   if (prefs.begin("jalrakshak", false)) {
+    prefs.putBool("muted", g_audioMuted);
     prefs.putBool("audMute", g_audioMuted);
     prefs.end();
   }
@@ -225,6 +241,7 @@ void audio_set_muted(bool muted) {
 
   Preferences prefs;
   if (prefs.begin("jalrakshak", false)) {
+    prefs.putBool("muted", g_audioMuted);
     prefs.putBool("audMute", g_audioMuted);
     prefs.end();
   }

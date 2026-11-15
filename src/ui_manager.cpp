@@ -24,6 +24,23 @@ static uint32_t lastTouchMs = 0;
 static uint32_t animFrame = 0;
 static bool isTouching = false; // Edge-triggered debounce flag
 
+// Thread-safe async UI request flags (dispatched safely from Core 0 to Core 1)
+static volatile bool g_reqLangCycle = false;
+static volatile bool g_reqBrtCycle = false;
+static volatile bool g_uiForceRedraw = false;
+
+void ui_request_language_cycle() {
+  g_reqLangCycle = true;
+}
+
+void ui_request_brightness_cycle() {
+  g_reqBrtCycle = true;
+}
+
+void ui_request_force_redraw() {
+  g_uiForceRedraw = true;
+}
+
 // Banner Overlay Timer & Mode
 enum BannerType { BANNER_NONE, BANNER_BASELINE_SAVED, BANNER_OFFSETS_RESET };
 static BannerType currentBanner = BANNER_NONE;
@@ -263,49 +280,65 @@ static void renderHeader(const WaterTelemetry &telemetry) {
     tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_BG);
     tft.setTextSize(1);
     tft.setCursor(6, 10);
-    tft.print("JALRAKSHAK // AI");
+    tft.print("JALRAKSHAK");
   } else {
     tft.drawBitmap(6, 5, BMP_TITLE_JALRAKSHAK, BMP_TITLE_JALRAKSHAK_W, BMP_TITLE_JALRAKSHAK_H, UI_COLOR_CYAN, UI_COLOR_BG);
-    tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_BG);
-    tft.setTextSize(1);
-    tft.setCursor(82, 10);
-    tft.print("// AI");
   }
 
-  // Pulsing Heartbeat Dot
+  // Pulsing Heartbeat Dot (x: 82)
   animFrame++;
   int pulseRadius = (animFrame % 16 < 8) ? 3 : 2;
   uint16_t pulseColor = (animFrame % 16 < 8) ? UI_COLOR_CYAN : UI_COLOR_DARK_GRAY;
-  tft.fillCircle(144, 14, 4, UI_COLOR_BG);
-  tft.fillCircle(144, 14, pulseRadius, pulseColor);
+  tft.fillCircle(82, 14, 4, UI_COLOR_BG);
+  tft.fillCircle(82, 14, pulseRadius, pulseColor);
 
-  // Interactive Brightness Badge (x: 154, w: 48, h: 18)
-  tft.fillRoundRect(154, 5, 48, 18, 3, UI_COLOR_CARD);
-  tft.drawRoundRect(154, 5, 48, 18, 3, UI_COLOR_CARD_BORDER);
+  // 18650 Battery / USB Power Badge (x: 94, w: 46, h: 18)
+  tft.fillRoundRect(94, 5, 46, 18, 3, UI_COLOR_CARD);
+  if (telemetry.batConnected) {
+    uint16_t batCol = (telemetry.batPercent <= 15.0f) ? UI_COLOR_ALERT : 
+                      (telemetry.batPercent <= 30.0f) ? UI_COLOR_CAUTION : UI_COLOR_SAFE;
+    tft.drawRoundRect(94, 5, 46, 18, 3, batCol);
+    tft.setTextColor(batCol, UI_COLOR_CARD);
+    tft.setTextSize(1);
+    tft.setCursor(98, 10);
+    tft.printf("%3.0f%%", telemetry.batPercent);
+  } else {
+    tft.drawRoundRect(94, 5, 46, 18, 3, UI_COLOR_CYAN);
+    tft.setTextColor(UI_COLOR_CYAN, UI_COLOR_CARD);
+    tft.setTextSize(1);
+    tft.setCursor(104, 10);
+    tft.print("USB");
+  }
+
+  // Interactive Brightness Badge (x: 144, w: 48, h: 18)
+  tft.fillRoundRect(144, 5, 48, 18, 3, UI_COLOR_CARD);
+  tft.drawRoundRect(144, 5, 48, 18, 3, UI_COLOR_CARD_BORDER);
   tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_CARD);
   tft.setTextSize(1);
-  tft.setCursor(158, 10);
+  tft.setCursor(148, 10);
   tft.printf("BRT:%s", (currentBrt == BRIGHTNESS_LOW) ? "L" : (currentBrt == BRIGHTNESS_MED) ? "M" : "H");
 
-  // Interactive Language Badge (x: 206, w: 52, h: 18)
-  tft.fillRoundRect(206, 5, 52, 18, 3, UI_COLOR_CARD);
-  tft.drawRoundRect(206, 5, 52, 18, 3, UI_COLOR_CYAN);
+  // Interactive Language Badge (x: 196, w: 56, h: 18)
+  tft.fillRoundRect(196, 5, 56, 18, 3, UI_COLOR_CARD);
+  tft.drawRoundRect(196, 5, 56, 18, 3, UI_COLOR_CYAN);
   tft.setTextColor(UI_COLOR_CYAN, UI_COLOR_CARD);
   tft.setTextSize(1);
-  tft.setCursor(210, 10);
+  tft.setCursor(200, 10);
   tft.print((currentLang == LANG_EN) ? "LNG:EN" : (currentLang == LANG_HI) ? "LNG:HI" : "LNG:MR");
 
-  // Mode Badge ([ LIVE ] vs [ SPIKE ]) (x: 262, w: 52, h: 18)
+  // Mode Badge ([ LIVE ] vs [ SPIKE ]) (x: 256, w: 60, h: 18)
   if (telemetry.isSimSpike) {
-    tft.fillRoundRect(262, 5, 52, 18, 3, UI_COLOR_DARK_ALERT);
-    tft.drawRoundRect(262, 5, 52, 18, 3, UI_COLOR_ALERT);
+    tft.fillRoundRect(256, 5, 60, 18, 3, UI_COLOR_DARK_ALERT);
+    tft.drawRoundRect(256, 5, 60, 18, 3, UI_COLOR_ALERT);
     tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_DARK_ALERT);
-    tft.setCursor(268, 10);
+    tft.setTextSize(1);
+    tft.setCursor(266, 10);
     tft.print("SPIKE");
   } else {
-    tft.fillRoundRect(262, 5, 52, 18, 3, UI_COLOR_CARD);
-    tft.drawRoundRect(262, 5, 52, 18, 3, UI_COLOR_SAFE);
+    tft.fillRoundRect(256, 5, 60, 18, 3, UI_COLOR_CARD);
+    tft.drawRoundRect(256, 5, 60, 18, 3, UI_COLOR_SAFE);
     tft.setTextColor(UI_COLOR_SAFE, UI_COLOR_CARD);
+    tft.setTextSize(1);
     tft.setCursor(270, 10);
     tft.print("LIVE");
   }
@@ -497,37 +530,45 @@ static void renderRawView(const WaterTelemetry &telemetry) {
   tft.setTextSize(1);
   tft.setCursor(14, 40);
   tft.print("HARDWARE VOLTAGES & PERSISTED SETTINGS");
-  tft.drawFastHLine(14, 51, 290, UI_COLOR_CARD_BORDER);
+  tft.drawFastHLine(14, 50, 290, UI_COLOR_CARD_BORDER);
 
   tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_CARD);
-  tft.setCursor(14, 56);
+  tft.setCursor(14, 55);
   tft.printf("TDS Sensor (GPIO 34):      %.3f V  -->  %.0f ppm", telemetry.rawTdsV, telemetry.tdsPpm);
 
-  tft.setCursor(14, 69);
+  tft.setCursor(14, 67);
   tft.printf("Turbidity TS-300B (VP/36):  %.3f V  -->  %.1f NTU %s", 
              telemetry.rawTurbV, telemetry.turbNTU, telemetry.turbStandby ? "[STBY]" : "");
 
-  tft.setCursor(14, 82);
+  tft.setCursor(14, 79);
   tft.printf("pH Probe (GPIO 35):        %.3f V  -->  %.2f pH %s", 
              telemetry.rawPhV, telemetry.pH, telemetry.phStandby ? "[STBY]" : "");
 
   float compFactor = 1.0f + 0.02f * (telemetry.tempC - 25.0f);
-  tft.setCursor(14, 95);
+  tft.setCursor(14, 91);
   tft.printf("DS18B20 Temp (GPIO 4):     %.2f C  (Comp: x%.3f)", telemetry.tempC, compFactor);
 
+  tft.setCursor(14, 103);
+  if (telemetry.batConnected) {
+    tft.printf("18650 Battery (VN/39):     %.2f V (%.0f%%) [Pin: %.2fV]", 
+               telemetry.batVolts, telemetry.batPercent, telemetry.rawBatPinV);
+  } else {
+    tft.printf("18650 Battery (VN/39):     USB POWER DETECTED [Pin: %.2fV]", telemetry.rawBatPinV);
+  }
+
   // Settings Buttons inside RAW view
-  // 1. Backlight Setting Button (x: 14, y: 112, w: 138, h: 24)
-  tft.fillRoundRect(14, 112, 138, 24, 3, UI_COLOR_BG);
-  tft.drawRoundRect(14, 112, 138, 24, 3, UI_COLOR_CYAN);
+  // 1. Backlight Setting Button (x: 14, y: 116, w: 138, h: 22)
+  tft.fillRoundRect(14, 116, 138, 22, 3, UI_COLOR_BG);
+  tft.drawRoundRect(14, 116, 138, 22, 3, UI_COLOR_CYAN);
   tft.setTextColor(UI_COLOR_CYAN, UI_COLOR_BG);
-  tft.setCursor(20, 119);
+  tft.setCursor(20, 122);
   tft.printf("BRT: %s (Tap)", (currentBrt == BRIGHTNESS_LOW) ? "LOW (30%)" : (currentBrt == BRIGHTNESS_MED) ? "MED (65%)" : "HIGH (100%)");
 
-  // 2. Language Setting Button (x: 160, y: 112, w: 144, h: 24)
-  tft.fillRoundRect(160, 112, 144, 24, 3, UI_COLOR_BG);
-  tft.drawRoundRect(160, 112, 144, 24, 3, UI_COLOR_CYAN);
+  // 2. Language Setting Button (x: 160, y: 116, w: 144, h: 22)
+  tft.fillRoundRect(160, 116, 144, 22, 3, UI_COLOR_BG);
+  tft.drawRoundRect(160, 116, 144, 22, 3, UI_COLOR_CYAN);
   tft.setTextColor(UI_COLOR_CYAN, UI_COLOR_BG);
-  tft.setCursor(166, 119);
+  tft.setCursor(166, 122);
   tft.printf("LANG: %s (Tap)", (currentLang == LANG_EN) ? "ENGLISH" : (currentLang == LANG_HI) ? "HINDI" : "MARATHI");
 
   // 3. Dedicated Recalibrate Touch Button (x: 14 to 196, y: 142 to 164)
@@ -681,6 +722,20 @@ static void renderTouchBar(const WaterTelemetry &telemetry) {
 // MAIN UI RENDER LOOP
 // ============================================================================
 void ui_render(const WaterTelemetry &telemetry) {
+  // Service remote thread-safe UI actions dispatched from Core 0
+  if (g_reqLangCycle) {
+    g_reqLangCycle = false;
+    ui_cycle_language();
+  }
+  if (g_reqBrtCycle) {
+    g_reqBrtCycle = false;
+    ui_cycle_brightness();
+  }
+  if (g_uiForceRedraw) {
+    g_uiForceRedraw = false;
+    lastView = (ScreenView)-1;
+  }
+
   if (currentView != lastView) {
     tft.fillScreen(UI_COLOR_BG);
     lastView = currentView;
@@ -786,36 +841,36 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
     // A. Header Bar Touches (y: 0 to 28)
     // ------------------------------------------------------------------------
     if (ty <= 28) {
-      // Tap Brightness Badge (x: 150 to 204)
-      if (tx >= 150 && tx <= 204) {
-        tft.fillRoundRect(154, 5, 48, 18, 3, UI_COLOR_WHITE);
+      // Tap Brightness Badge (x: 142 to 194)
+      if (tx >= 142 && tx <= 194) {
+        tft.fillRoundRect(144, 5, 48, 18, 3, UI_COLOR_WHITE);
         tft.setTextColor(UI_COLOR_BG, UI_COLOR_WHITE);
         tft.setTextSize(1);
-        tft.setCursor(160, 10);
+        tft.setCursor(150, 10);
         tft.print("BRT");
         delay(80);
         ui_cycle_brightness();
         renderHeader(telemetry);
         return;
       }
-      // Tap Language Badge (x: 205 to 260)
-      else if (tx >= 205 && tx <= 260) {
-        tft.fillRoundRect(206, 5, 52, 18, 3, UI_COLOR_WHITE);
+      // Tap Language Badge (x: 195 to 254)
+      else if (tx >= 195 && tx <= 254) {
+        tft.fillRoundRect(196, 5, 56, 18, 3, UI_COLOR_WHITE);
         tft.setTextColor(UI_COLOR_BG, UI_COLOR_WHITE);
         tft.setTextSize(1);
-        tft.setCursor(212, 10);
+        tft.setCursor(202, 10);
         tft.print("LANG");
         delay(80);
         ui_cycle_language();
         return;
       }
-      // Tap Mode Badge (x: 261 to 318)
-      else if (tx >= 261 && tx <= 318) {
+      // Tap Mode Badge (x: 255 to 318)
+      else if (tx >= 255 && tx <= 318) {
         simSpikeActive = !simSpikeActive;
-        tft.fillRoundRect(262, 5, 52, 18, 3, UI_COLOR_WHITE);
+        tft.fillRoundRect(256, 5, 60, 18, 3, UI_COLOR_WHITE);
         tft.setTextColor(UI_COLOR_BG, UI_COLOR_WHITE);
         tft.setTextSize(1);
-        tft.setCursor(268, 10);
+        tft.setCursor(266, 10);
         tft.print("MODE");
         delay(80);
         renderHeader(telemetry);
@@ -824,14 +879,14 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
     }
 
     // ------------------------------------------------------------------------
-    // B. Settings View Touches (VIEW_RAW_DIAGNOSTICS: y 110 to 175)
+    // B. Settings View Touches (VIEW_RAW_DIAGNOSTICS: y 114 to 175)
     // ------------------------------------------------------------------------
-    if (currentView == VIEW_RAW_DIAGNOSTICS && ty >= 110 && ty <= 175) {
+    if (currentView == VIEW_RAW_DIAGNOSTICS && ty >= 114 && ty <= 175) {
       // Brightness Row (x: 14 to 152)
       if (tx >= 14 && tx <= 152 && ty <= 138) {
-        tft.fillRoundRect(14, 112, 138, 24, 3, UI_COLOR_CYAN);
+        tft.fillRoundRect(14, 116, 138, 22, 3, UI_COLOR_CYAN);
         tft.setTextColor(UI_COLOR_BG, UI_COLOR_CYAN);
-        tft.setCursor(20, 119);
+        tft.setCursor(20, 122);
         tft.print("CYCLING BRT...");
         delay(80);
         ui_cycle_brightness();
@@ -840,9 +895,9 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
       } 
       // Language Row (x: 160 to 304)
       else if (tx >= 160 && tx <= 304 && ty <= 138) {
-        tft.fillRoundRect(160, 112, 144, 24, 3, UI_COLOR_CYAN);
+        tft.fillRoundRect(160, 116, 144, 22, 3, UI_COLOR_CYAN);
         tft.setTextColor(UI_COLOR_BG, UI_COLOR_CYAN);
-        tft.setCursor(166, 119);
+        tft.setCursor(166, 122);
         tft.print("CYCLING LANG...");
         delay(80);
         ui_cycle_language();

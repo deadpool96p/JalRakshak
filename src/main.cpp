@@ -27,13 +27,15 @@ static void handleWebControlAction(const String &action) {
   Serial.printf("[WEB CONTROL] Action dispatched: %s\n", action.c_str());
   if (action == "sim_toggle") {
     g_simSpikeActive = !g_simSpikeActive;
+    ui_request_force_redraw();
     Serial.printf("[WEB] Toggled Simulation Mode: %s\n", g_simSpikeActive ? "SIM SPIKE" : "LIVE SENSOR");
   } else if (action == "lang_cycle") {
-    ui_cycle_language();
+    ui_request_language_cycle();
   } else if (action == "brt_cycle") {
-    ui_cycle_brightness();
+    ui_request_brightness_cycle();
   } else if (action == "audio_mute_toggle") {
     audio_toggle_mute();
+    ui_request_force_redraw();
   } else if (action == "audio_test") {
     audio_play_test();
   } else if (action == "cal_zero") {
@@ -41,11 +43,13 @@ static void handleWebControlAction(const String &action) {
       sensors_calibrate_zero(g_sharedTelemetry);
       xSemaphoreGive(g_telemetryMutex);
     }
+    ui_request_force_redraw();
   } else if (action == "cal_reset") {
     if (xSemaphoreTake(g_telemetryMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       sensors_reset_offsets(g_sharedTelemetry);
       xSemaphoreGive(g_telemetryMutex);
     }
+    ui_request_force_redraw();
   }
 }
 
@@ -91,6 +95,11 @@ void sensorTinyMLTask(void *pvParameters) {
 
       // Update Asynchronous Audio State Engine (Confirmation Chimes & Alarms)
       audio_update_state(localTelemetry.finalStatus);
+
+      // Low Battery Alert Chime (triggered once upon crossing < 15% threshold)
+      if (localTelemetry.lowBatAlertTriggered) {
+        audio_play_low_battery();
+      }
 
       // Update Web Dashboard Telemetry Snapshot
       web_dashboard_update_telemetry(localTelemetry, simActive);

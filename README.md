@@ -23,6 +23,11 @@
   - Asynchronous FreeRTOS task with zero background hiss (`dacWrite(25, 0)` at idle).
   - Melodic startup chime, confirmation bell on `SAFE`, and urgent warble alarm on `CONTAMINATED` (with 15-second anti-spam cooldown).
   - Audio Mute toggle persisted in Flash NVS.
+- **18650 Battery Monitoring & USB Auto-Detect (`VN / GPIO 39`):**
+  - Integrated high-impedance $100\text{ k}\Omega + 100\text{ k}\Omega$ voltage divider ($2.00\times$ ratio) with $0.1\text{ }\mu\text{F}$ noise suppression cap on ADC1.
+  - Piecewise Li-ion State-of-Charge (SoC) lookup curve ($4.18\text{V}=100\%$ down to $3.15\text{V}=0\%$) with exponential moving average ($\alpha=0.15$) to prevent load jump.
+  - Automatic USB Power Detection ($V_{bat} < 2.60\text{V}$) switching the UI badge to `[USB]` and web interface to `PWR: USB (5V)`.
+  - Low-battery alert chime (< 15% charge) with visual warning indicator.
 - **Offline Wi-Fi SoftAP & Web Dashboard:**
   - On-site Access Point: SSID `JalRakshak-Node`, Password `jalrakshak123`, Default IP `192.168.4.1`, mDNS `http://jalrakshak.local`.
   - Low RF power (`11 dBm`) to eliminate ADC1 sensor interference.
@@ -49,6 +54,7 @@
 | **TDS Sensor** | Analog TDS Signal | `GPIO 34` (`D34`) | ADC1 Ch6, temperature-compensated (3.3V direct) |
 | **Turbidity** | TS-300B Analog Out | `GPIO 36` (`VP`) | ADC1 Ch0 via **10k + 20k divider** (1.50× scale to protect 3.3V ADC) |
 | **pH Sensor** | Analog pH `Po` Pin | `GPIO 35` (`D35`) | ADC1 Ch7 via **10k + 20k divider** (1.50× scale; `PH_SENSOR_CONNECTED` toggle) |
+| **18650 Battery** | Li-ion Voltage Sense | `GPIO 39` (`VN`) | ADC1 Ch3 via **100k + 100k divider** (2.00× scale; USB auto-detect) |
 | **Status LED Green** | Drinkable / Safe | `GPIO 33` (`D33`) | Solid Green on SAFE; 600ms alternating blink on CAUTION |
 | **Status LED Red** | Alert / Contaminated | `GPIO 32` (`D32`) | Rapid 200ms flash on CONTAMINATED |
 | **Activity LED Blue**| Inference & Web Pulse | `GPIO 27` (`D27`) | 40ms pulse on ML inference; double-pulse on web requests |

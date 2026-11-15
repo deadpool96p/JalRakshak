@@ -50,6 +50,7 @@ The system combines a **4→16→12→3 Multilayer Perceptron (MLP)** trained on
 | **Analog TDS** | `TDS_AOUT` | **GPIO 34** | `D34` | Input | ADC1_CH6 (0 – 2.3V linear output, 3.3V powered direct) |
 | **TS-300B Turbidity**| `TURB_AOUT` | **GPIO 36** | `VP` | Input | ADC1_CH0 via **10 kΩ + 20 kΩ divider** (1.50× scale, 5V safe) |
 | **PH-4502C pH** | `PH_PO` | **GPIO 35** | `D35` | Input | ADC1_CH7 via **10 kΩ + 20 kΩ divider** (1.50× scale, 5V safe) |
+| **18650 Battery Sense**| `BAT_SENSE` | **GPIO 39** | `VN` | Input | ADC1_CH3 via **100 kΩ + 100 kΩ divider** (2.00× scale, USB auto-detect) |
 | **Status LED Green** | `LED_GREEN` | **GPIO 33** | `D33` | Output | Safe status (Solid on Drinkable, 600ms alt on Caution) |
 | **Status LED Red** | `LED_RED` | **GPIO 32** | `D32` | Output | Alert status (Rapid 200ms flash on Contaminated) |
 | **Activity LED Blue**| `LED_BLUE` | **GPIO 27** | `D27` | Output | TinyML 40ms pulse & Web request double-pulse |
@@ -82,7 +83,24 @@ The system combines a **4→16→12→3 Multilayer Perceptron (MLP)** trained on
 > ```
 > This prevents ADC clipping while clean water yields $\approx 4.05\text{V} / 1.50 = 2.70\text{V}$ at `GPIO 36 / VP`.
 
-> **IMPORTANT ARCHITECTURAL RULE:** All analog sensors are wired exclusively to **ADC1** (`GPIO 34, 35, 36`). ADC2 pins are avoided because ADC2 is shared with the ESP32 Wi-Fi/Bluetooth hardware block and is disabled whenever wireless networking is initialized.
+> **18650 LI-ION BATTERY SENSING CIRCUIT (GPIO 39 / VN):**
+> To safely monitor a single-cell Li-ion battery (3.0V – 4.2V), a high-impedance 1:2 divider with a high-frequency bypass capacitor is connected to `GPIO 39 / VN`:
+> ```
+> 18650 Battery (+) (3.0V - 4.2V) ───[ 100 kΩ (R1) ]───┬───► ESP32 ADC1 Pin (GPIO 39 / VN)
+>                                                       │
+>                                                [ 100 kΩ (R2) ]
+>                                                       │
+>                                                [ 0.1 µF (C1) ] ── (in parallel with R2 to GND)
+>                                                       │
+>                                                      GND
+> Scale Multiplier = (R1 + R2) / R2 = (100k + 100k) / 100k = 2.00x
+> V_battery = V_pin * 2.00f + BAT_CAL_OFFSET
+> ```
+> - **USB Auto-Detect:** If $V_{battery} < 2.60\text{V}$, the firmware determines no battery is present, switching the header badge to `[USB]` and the web UI to `PWR: USB (5V)`.
+> - **Piecewise State-of-Charge (SoC) Curve:** Accurately maps non-linear Li-ion chemistry ($4.18\text{V}=100\%$ down to $3.15\text{V}=0\%$) with an exponential moving average ($\alpha=0.15$) to prevent rapid percentage jumping under load fluctuations.
+> - **Low Battery Alert:** If charge drops below $15\%$, a low-battery chime (`SOUND_LOW_BATTERY`) sounds and the top header badge turns flashing RED.
+>
+> > **IMPORTANT ARCHITECTURAL RULE:** All analog sensors and battery inputs are wired exclusively to **ADC1** (`GPIO 34, 35, 36, 39`). ADC2 pins are avoided because ADC2 is shared with the ESP32 Wi-Fi/Bluetooth hardware block and is disabled whenever wireless networking is initialized.
 
 ---
 

@@ -14,7 +14,8 @@ enum AudioSoundType {
   SOUND_STARTUP,
   SOUND_SAFE_CHIME,
   SOUND_CONTAMINATED_ALARM,
-  SOUND_TEST
+  SOUND_TEST,
+  SOUND_LOW_BATTERY
 };
 
 // ============================================================================
@@ -27,6 +28,7 @@ void audio_play_startup();
 void audio_play_safe();
 void audio_play_contaminated();
 void audio_play_test();
+void audio_play_low_battery();
 void audio_update_state(int newStatus);
 bool audio_toggle_mute();
 bool audio_is_muted();

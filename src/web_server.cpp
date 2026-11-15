@@ -90,7 +90,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <div class="container">
   <header>
     <div class="logo"><span class="pulse"></span> JALRAKSHAK // EDGE AI</div>
-    <div class="net-badge">AP: JalRakshak-Node | 192.168.4.1</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div id="batBadge" class="net-badge" style="color:var(--safe-green)">PWR: DETECTING...</div>
+      <div class="net-badge">AP: JalRakshak-Node | 192.168.4.1</div>
+    </div>
   </header>
 
   <div id="heroBox" class="status-hero hero-safe">
@@ -208,6 +211,18 @@ function updateUI(d) {
 
   document.getElementById('valTemp').innerHTML = d.tempC.toFixed(1) + ' <span style="font-size:14px;color:var(--text-dim)">&deg;C</span>';
   document.getElementById('tempStatus').innerText = d.tempConnected ? 'Probe OK' : 'Simulated';
+
+  // Battery status badge
+  const batBadge = document.getElementById('batBadge');
+  if (batBadge) {
+    if (d.batConnected) {
+      batBadge.innerText = 'BAT: ' + Math.round(d.batPercent) + '% (' + d.batVolts.toFixed(2) + 'V)';
+      batBadge.style.color = d.batPercent <= 15 ? 'var(--alert-red)' : d.batPercent <= 30 ? 'var(--caution-yellow)' : 'var(--safe-green)';
+    } else {
+      batBadge.innerText = 'PWR: USB (5V)';
+      batBadge.style.color = 'var(--accent-cyan)';
+    }
+  }
 
   // Hero status box
   const hero = document.getElementById('heroBox');
@@ -344,10 +359,11 @@ static void handleCaptiveRedirect() {
 }
 
 static void handleApiTelemetry() {
-  char json[512];
+  char json[640];
   snprintf(json, sizeof(json),
     "{\"pH\":%.2f,\"tdsPpm\":%.1f,\"turbNTU\":%.2f,\"tempC\":%.1f,"
     "\"rawTdsV\":%.3f,\"rawTurbV\":%.3f,\"rawPhV\":%.3f,"
+    "\"batVolts\":%.2f,\"batPercent\":%.0f,\"batConnected\":%s,\"rawBatPinV\":%.2f,"
     "\"probSafe\":%.3f,\"probCaution\":%.3f,\"probContam\":%.3f,"
     "\"predictedClass\":%d,\"finalStatus\":%d,\"alertReason\":\"%s\","
     "\"inferLatencyUs\":%lu,\"failSafe\":%s,\"turbStandby\":%s,\"phStandby\":%s,"
@@ -360,6 +376,10 @@ static void handleApiTelemetry() {
     g_webTelemetry.rawTdsV,
     g_webTelemetry.rawTurbV,
     g_webTelemetry.rawPhV,
+    g_webTelemetry.batVolts,
+    g_webTelemetry.batPercent,
+    g_webTelemetry.batConnected ? "true" : "false",
+    g_webTelemetry.rawBatPinV,
     g_webTelemetry.probSafe,
     g_webTelemetry.probCaution,
     g_webTelemetry.probContaminated,

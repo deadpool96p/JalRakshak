@@ -14,6 +14,42 @@ static float g_tdsZeroOffset = 0.0f;
 static float g_turbZeroOffset = 0.0f;
 static float g_simFallbackTempC = 25.0f;
 
+// 18650 Battery State
+static float g_batPercentSmoothed = -1.0f;
+static bool  g_lowBatAlertFired = false;
+
+// 18650 Piecewise Li-ion Discharge Curve Table
+struct BatCurvePoint {
+  float volts;
+  float percent;
+};
+
+static const BatCurvePoint BAT_CURVE[8] = {
+  { 4.18f, 100.0f },
+  { 4.05f, 85.0f },
+  { 3.90f, 70.0f },
+  { 3.78f, 50.0f },
+  { 3.68f, 30.0f },
+  { 3.55f, 15.0f },
+  { 3.35f, 5.0f },
+  { 3.15f, 0.0f }
+};
+
+float sensors_calc_bat_percent(float volts) {
+  if (volts >= BAT_CURVE[0].volts) return 100.0f;
+  if (volts <= BAT_CURVE[7].volts) return 0.0f;
+
+  for (int i = 0; i < 7; i++) {
+    if (volts <= BAT_CURVE[i].volts && volts >= BAT_CURVE[i + 1].volts) {
+      float spanV = BAT_CURVE[i].volts - BAT_CURVE[i + 1].volts;
+      float spanPct = BAT_CURVE[i].percent - BAT_CURVE[i + 1].percent;
+      float frac = (volts - BAT_CURVE[i + 1].volts) / spanV;
+      return BAT_CURVE[i + 1].percent + frac * spanPct;
+    }
+  }
+  return 0.0f;
+}
+
 float sensors_get_tds_offset() {
   return g_tdsZeroOffset;
 }
@@ -69,6 +105,7 @@ void sensors_init() {
   pinMode(PIN_TDS, INPUT);
   pinMode(PIN_TURBIDITY, INPUT);
   pinMode(PIN_PH, INPUT);
+  pinMode(PIN_BATTERY, INPUT);
 
   sensors_load_offsets_from_nvs();
 }
@@ -198,6 +235,47 @@ void sensors_read(WaterTelemetry &telemetry, bool simSpikeActive) {
   telemetry.rawPhV = pinPhV * PH_VOLTAGE_SCALE;
   telemetry.pH = PH_DEFAULT_VALUE;
 #endif
+
+  // --------------------------------------------------------------------------
+  // 6. 18650 BATTERY MONITOR (GPIO 39 / VN via 100k + 100k Divider + 0.1uF Cap)
+  // --------------------------------------------------------------------------
+  float pinBatV = sensors_read_adc_voltage(PIN_BATTERY, 32);
+  telemetry.rawBatPinV = pinBatV;
+  float batV = (pinBatV * BAT_DIVIDER_RATIO) + BAT_CAL_OFFSET;
+  telemetry.batVolts = batV;
+
+  if (batV < BAT_MIN_DETECT_V) {
+    // Battery switch OFF or disconnected -> Running on USB 5V power
+    telemetry.batConnected = false;
+    telemetry.batPercent = 100.0f; // Nominal display for USB
+    telemetry.lowBatAlertTriggered = false;
+    g_batPercentSmoothed = -1.0f;
+  } else {
+    telemetry.batConnected = true;
+    float rawPct = sensors_calc_bat_percent(batV);
+    if (g_batPercentSmoothed < 0.0f) {
+      g_batPercentSmoothed = rawPct;
+    } else {
+      // Exponential Moving Average filter (alpha = 0.15)
+      g_batPercentSmoothed = g_batPercentSmoothed * (1.0f - 0.15f) + rawPct * 0.15f;
+    }
+    telemetry.batPercent = g_batPercentSmoothed;
+
+    // Low-Battery (< 15%) Alert Signal Guard
+    if (telemetry.batPercent < 15.0f) {
+      if (!g_lowBatAlertFired) {
+        g_lowBatAlertFired = true;
+        telemetry.lowBatAlertTriggered = true;
+      } else {
+        telemetry.lowBatAlertTriggered = false;
+      }
+    } else {
+      telemetry.lowBatAlertTriggered = false;
+      if (telemetry.batPercent >= 20.0f) {
+        g_lowBatAlertFired = false; // Reset hysteresis
+      }
+    }
+  }
 }
 
 // ============================================================================

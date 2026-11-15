@@ -57,6 +57,9 @@ void ui_run_touch_calibration();
 
 void ui_cycle_language();
 void ui_cycle_brightness();
+void ui_request_language_cycle();
+void ui_request_brightness_cycle();
+void ui_request_force_redraw();
 LanguageMode ui_get_language();
 BrightnessLevel ui_get_brightness();
 ScreenView ui_get_current_view();
