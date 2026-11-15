@@ -47,9 +47,9 @@ The system combines a **4→16→12→3 Multilayer Perceptron (MLP)** trained on
 | Subsystem | Signal Name | ESP32 GPIO | Header Pin | Direction | Signal Type / Electrical Characteristics |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **DS18B20 Temp** | `ONE_WIRE` | **GPIO 4** | `D4` | Bi-directional | Digital 1-Wire, requires **4.7 kΩ pull-up** to 3.3V |
-| **Analog TDS** | `TDS_AOUT` | **GPIO 34** | `D34` | Input | ADC1_CH6 (0 – 2.3V linear output, 3.3V powered) |
-| **TS-300B Turbidity**| `TURB_AOUT` | **GPIO 36** | `VP` | Input | ADC1_CH0 (0.5 – 4.5V output, 5V powered) |
-| **PH-4502C pH** | `PH_PO` | **GPIO 35** | `D35` | Input | ADC1_CH7 (0.0 – 5.0V centered at 2.50V, 5V powered) |
+| **Analog TDS** | `TDS_AOUT` | **GPIO 34** | `D34` | Input | ADC1_CH6 (0 – 2.3V linear output, 3.3V powered direct) |
+| **TS-300B Turbidity**| `TURB_AOUT` | **GPIO 36** | `VP` | Input | ADC1_CH0 via **10 kΩ + 20 kΩ divider** (1.50× scale, 5V safe) |
+| **PH-4502C pH** | `PH_PO` | **GPIO 35** | `D35` | Input | ADC1_CH7 via **10 kΩ + 20 kΩ divider** (1.50× scale, 5V safe) |
 | **Backlight Control**| `TFT_LED / BLK`| **GPIO 22** | `D22` | Output | 5 kHz 8-bit Hardware PWM (Duty 75 – 255) |
 | **Display SPI Clock**| `TFT_SCLK` | **GPIO 18** | `D18` | Output | Hardware VSPI SCK (27 MHz display / 1 MHz touch) |
 | **Display SPI MOSI** | `TFT_MOSI` | **GPIO 23** | `D23` | Output | Hardware VSPI MOSI (Master Out Slave In) |
@@ -64,6 +64,19 @@ The system combines a **4→16→12→3 Multilayer Perceptron (MLP)** trained on
 | **Module Power 1** | `VCC_5V` | `VIN` | `5V` | Power Out | 5.0V DC from USB to power TS-300B & PH-4502C |
 | **Module Power 2** | `VCC_3V3` | `3V3` | `3.3V` | Power Out | 3.3V DC to power DS18B20 & DT0530 TDS |
 | **Common Ground** | `GND` | `GND` | `GND` | Ground | Common system ground rail across all modules |
+
+> **5V-TO-3.3V VOLTAGE DIVIDER CIRCUIT:**
+> Because the ESP32 ADC saturates at 3.30V, 5V-powered sensors (`TS-300B` and `PH-4502C`) must route their analog outputs through a simple passive resistor divider before reaching the ESP32 pins:
+> ```
+> Sensor Analog Out (0 - 5.0V) ───[ 10 kΩ (R1) ]───┬───► ESP32 ADC Pin (0 - 3.3V Max)
+>                                                   │
+>                                            [ 20 kΩ (R2) ]
+>                                                   │
+>                                                  GND
+> Scale Multiplier = (R1 + R2) / R2 = (10k + 20k) / 20k = 1.50x
+> V_sensor = V_pin * 1.50f
+> ```
+> This prevents ADC clipping while clean water yields $\approx 4.05\text{V} / 1.50 = 2.70\text{V}$ at `GPIO 36 / VP`.
 
 > **IMPORTANT ARCHITECTURAL RULE:** All analog sensors are wired exclusively to **ADC1** (`GPIO 34, 35, 36`). ADC2 pins are avoided because ADC2 is shared with the ESP32 Wi-Fi/Bluetooth hardware block and is disabled whenever wireless networking is initialized.
 
@@ -134,6 +147,16 @@ tft.setRotation(1); // Locked 320x240 landscape
 - **Operating Characteristics:**
   - Clear water allows maximum infrared transmission $\rightarrow$ High output voltage ($\ge 3.80\text{V}$ at 5V supply).
   - Suspended particles scatter and attenuate light $\rightarrow$ Output voltage drops proportionally.
+- **5V-to-3.3V Voltage Divider Protection:**
+  - The TS-300B module is powered from 5V to deliver its full dynamic range ($0.5\text{V} - 4.5\text{V}$).
+  - A $10\text{ k}\Omega + 20\text{ k}\Omega$ resistor divider scales this output down by $1.50\times$, ensuring clean water ($4.05\text{V}$) appears as $2.70\text{V}$ on `GPIO 36 / VP`, comfortably within the ESP32 3.30V ADC limit.
+  - The firmware automatically multiplies by `#define TURB_VOLTAGE_SCALE 1.50f` to recover the original sensor voltage.
+- **Factory eFuse Calibration & 32-Sample Trimmed-Mean Filter:**
+  - Standard ESP32 ADC reads suffer from electrical switching noise and non-linearity.
+  - JalRakshak utilizes `analogReadMilliVolts(pin)` backed by internal factory eFuse lookup tables.
+  - Samples 32 consecutive readings, sorts them, discards the 4 lowest and 4 highest outliers, and averages the middle 24 samples. This effectively eliminates inductive breadboard spikes and electrochemical crosstalk between the TDS and pH electrodes.
+- **Unplugged / Floating Wire Standby Guard:**
+  - If the unscaled pin voltage drops below $0.25\text{V}$ (`SENSOR_UNPLUGGED_VOLTAGE_THRESHOLD`), the firmware recognizes an unplugged wire or floating pin, sets `turbStandby = true`, clamps turbidity to a safe nominal $0.8\text{ NTU}$, and displays `"Standby"` on the dashboard rather than triggering a false $150\text{+ NTU}$ contamination alarm.
 - **Quadratic Transfer Function:**
   $$NTU = -1120.4 \cdot V^2 + 5742.3 \cdot V - 4352.9$$
 - **Safety Clamping:**
@@ -259,11 +282,22 @@ if (breach) {
   } else {
     telemetry.finalStatus = CLASS_CAUTION;
   }
+
+  // Synchronize P(Contam) and scrolling waveform with Guardrail Overrides
+  float mlContamProb = telemetry.probContaminated;
+  if (telemetry.finalStatus == CLASS_CONTAMINATED) {
+    // Proportional severity scaling from 0.88 up to 0.99
+    float severity = ...; 
+    telemetry.probContaminated = fmaxf(mlContamProb, 0.88f + severity * 0.11f);
+  } else if (telemetry.finalStatus == CLASS_CAUTION) {
+    telemetry.probContaminated = fmaxf(mlContamProb, 0.45f);
+  }
 } else {
   telemetry.failSafeTriggered = false;
   telemetry.finalStatus = telemetry.predictedClass;
 }
 ```
+This ensures that the displayed risk gauge, text, and scrolling waveform graph never contradict the safety alert status.
 
 ---
 
@@ -372,12 +406,17 @@ Instead of tying the display `LED` pin permanently to 3.3V, JalRakshak routes `L
   - **HIGH (100%):** Duty `255 / 255` (direct outdoor sunlight legibility).
 
 ### 8.2 Non-Volatile Storage (NVS) via `Preferences.h`
-All user settings are persisted in the dedicated `jalrakshak` NVS namespace in ESP32 Flash memory:
-- `"calData"`: 10-byte binary blob storing the 5 calibration coefficients (`uint16_t[5]`).
+All user settings and sensor calibration baselines are persisted in the dedicated `jalrakshak` NVS namespace in ESP32 Flash memory:
+- `"calData"`: 10-byte binary blob storing the 5 touch calibration coefficients (`uint16_t[5]`).
 - `"brt"`: 1-byte integer storing the active brightness level ($0, 1, 2$).
 - `"lang"`: 1-byte integer storing the active language ($0 = EN, 1 = HI, 2 = MR$).
+- `"tdsOff"`: 4-byte IEEE-754 float storing the zero baseline offset in ppm for TDS.
+- `"turbOff"`: 4-byte IEEE-754 float storing the zero baseline offset in NTU for Turbidity.
 
-When the device powers on, all settings are automatically loaded before the display renders its first frame.
+#### Sensor Offset Lifecycle:
+1. **At Boot:** The firmware initializes `<Preferences.h>` in `sensors_init()` and automatically reloads `"tdsOff"` and `"turbOff"`, guaranteeing that zero offsets survive power cycles.
+2. **Zero Calibration (`CAL / ZERO` Tap):** Submerging probes into pure RO water and tapping `CAL / ZERO` records the current un-offset physical values as new zero baselines, writes them to NVS, and flashes a green confirmation overlay (`BASELINE SAVED!`).
+3. **Offset Reset (Long-Press or UI Button):** Holding `CAL / ZERO` for $\ge 1.5\text{ seconds}$ (or tapping `[ RESET ]` inside `VIEW_RAW_DIAGNOSTICS`) resets `"tdsOff"` and `"turbOff"` back to $0.0\text{f}$, persists this change to Flash NVS, and flashes an alert banner (`OFFSETS RESET!`).
 
 ---
 
@@ -398,7 +437,7 @@ When the device powers on, all settings are automatically loaded before the disp
    uint16_t g_calData[5] = { 275, 3620, 264, 3532, 7 };
    ```
 2. **Boot Trigger (3-Second Window):** If the screen is touched during the first 3 seconds of boot (`tft.getTouchRawZ() > 300`), the device automatically enters 4-corner calibration mode (`tft.calibrateTouch()`).
-3. **On-Demand Trigger:** In `VIEW_RAW_DIAGNOSTICS`, tapping `"RECAL TOUCH"` or holding `CAL / ZERO` for $\ge 2\text{ seconds}$ initiates calibration without needing to reboot the ESP32.
+3. **On-Demand Trigger:** In `VIEW_RAW_DIAGNOSTICS`, tapping `"RECAL TOUCH"` initiates touch recalibration without needing to reboot the ESP32.
 
 ---
 

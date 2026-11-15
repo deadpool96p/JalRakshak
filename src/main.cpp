@@ -41,9 +41,6 @@ void sensorTinyMLTask(void *pvParameters) {
 
     // 3. Thread-Safe Mutex Lock to Update Shared State for Core 1
     if (xSemaphoreTake(g_telemetryMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      // Preserve calibration offsets across loops
-      localTelemetry.tdsOffset = g_sharedTelemetry.tdsOffset;
-      localTelemetry.turbOffset = g_sharedTelemetry.turbOffset;
       memcpy(&g_sharedTelemetry, &localTelemetry, sizeof(WaterTelemetry));
       xSemaphoreGive(g_telemetryMutex);
     }

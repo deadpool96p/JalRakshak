@@ -17,11 +17,12 @@
 - **Interactive 2.8" ILI9341 Touchscreen UI:**
   - **Multi-Screen State Machine:**
     1. `VIEW: DASH`: 4 parameter cards + live animated contamination risk probability waveform sprite ($120 \times 86\text{ px}$, $20.6\text{ KB SRAM}$).
-    2. `VIEW: RAW`: Live raw sensor voltages, temperature compensation factor, active baseline offsets, and hardware settings.
+    2. `VIEW: RAW`: Live raw sensor voltages, temperature compensation factor, active baseline offsets, and hardware settings. Includes on-screen `[ RESET ]` button to clear sensor calibration offsets.
     3. `VIEW: ML`: Large contamination risk gauge bar ($0\text{--}100\%$), per-class softmax distribution bars, and guardrail compliance breakdown.
   - **Multilingual Support:** English, Hindi (हिंदी), and Marathi (मराठी) with pixel-perfect 1-bit monochrome Devanagari typography.
   - **Hardware PWM Backlight:** 3 brightness presets on `GPIO 22` (`LOW 30%`, `MED 65%`, `HIGH 100%`) saved in Flash NVS.
-  - **Touch Calibration Persistence:** NVS Flash persistence via `<Preferences.h>` with 3-second boot hold trigger and on-demand recalibration.
+  - **Flash NVS Persistence:** Permanent storage in `<Preferences.h>` for touch calibration (`calData`), backlight brightness, regional language, and sensor zero baselines (`tdsOff` and `turbOff`).
+  - **Outlier Rejection & Standby Guard:** Factory eFuse `analogReadMilliVolts` with a 32-sample trimmed-mean filter (discards 4 lowest and 4 highest outliers). Automatic standby guard (`< 0.25V`) prevents false alarms when breadboard wires are unplugged.
 
 ---
 
@@ -30,9 +31,9 @@
 | Subsystem | Signal / Sensor | ESP32 Pin | Details |
 | :--- | :--- | :--- | :--- |
 | **Temperature** | DS18B20 Probe | `GPIO 4` (`D4`) | 1-Wire Data with 4.7kΩ pull-up ($25.0^\circ\text{C}$ fallback) |
-| **TDS Sensor** | Analog TDS Signal | `GPIO 34` (`D34`) | ADC1 Ch6, temperature-compensated |
-| **Turbidity** | TS-300B Analog Out | `GPIO 36` (`VP`) | ADC1 Ch0, polynomial mapped to NTU |
-| **pH Sensor** | Analog pH `Po` Pin | `GPIO 35` (`D35`) | ADC1 Ch7 (`PH_SENSOR_CONNECTED` toggle) |
+| **TDS Sensor** | Analog TDS Signal | `GPIO 34` (`D34`) | ADC1 Ch6, temperature-compensated (3.3V direct) |
+| **Turbidity** | TS-300B Analog Out | `GPIO 36` (`VP`) | ADC1 Ch0 via **10k + 20k divider** (1.50× scale to protect 3.3V ADC) |
+| **pH Sensor** | Analog pH `Po` Pin | `GPIO 35` (`D35`) | ADC1 Ch7 via **10k + 20k divider** (1.50× scale; `PH_SENSOR_CONNECTED` toggle) |
 | **Backlight PWM** | Display `LED` / `BLK` | `GPIO 22` (`D22`) | Hardware PWM (5 kHz, 8-bit timer) |
 | **Display SPI** | TFT MOSI / SCLK / MISO | `GPIO 23 / 18 / 19` | Hardware VSPI Bus |
 | **Display Control** | TFT CS / DC / RST | `GPIO 5 / 17 / 16` | Chip Select, Data/Command (`TX2`), Reset (`RX2`) |

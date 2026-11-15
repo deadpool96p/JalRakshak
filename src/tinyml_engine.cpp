@@ -108,6 +108,44 @@ void tinyml_infer(WaterTelemetry &telemetry) {
     } else {
       telemetry.finalStatus = CLASS_CAUTION;
     }
+
+    // Synchronize P(Contam) and scrolling waveform with Guardrail Overrides
+    float mlContamProb = telemetry.probContaminated;
+    if (telemetry.finalStatus == CLASS_CONTAMINATED) {
+      // Calculate severity of breach beyond IS 10500 limits
+      float severity = 0.0f;
+      if (telemetry.tdsPpm > IS10500_TDS_MAX) {
+        float s = (telemetry.tdsPpm - IS10500_TDS_MAX) / 500.0f; // reaches 1.0 at 1000 ppm
+        if (s > severity) severity = s;
+      }
+      if (telemetry.turbNTU > IS10500_TURB_MAX) {
+        float s = (telemetry.turbNTU - IS10500_TURB_MAX) / 25.0f;   // reaches 1.0 at 30 NTU
+        if (s > severity) severity = s;
+      }
+      if (telemetry.pH < IS10500_PH_MIN) {
+        float s = (IS10500_PH_MIN - telemetry.pH) / 2.0f;         // reaches 1.0 at pH 4.5
+        if (s > severity) severity = s;
+      } else if (telemetry.pH > IS10500_PH_MAX) {
+        float s = (telemetry.pH - IS10500_PH_MAX) / 2.0f;         // reaches 1.0 at pH 10.5
+        if (s > severity) severity = s;
+      }
+      if (severity > 1.0f) severity = 1.0f;
+
+      // Scale proportionally from 0.88f up to 0.99f
+      float effectiveContamProb = fmaxf(mlContamProb, 0.88f + severity * 0.11f);
+      if (effectiveContamProb > 0.99f) effectiveContamProb = 0.99f;
+
+      telemetry.probContaminated = effectiveContamProb;
+      float rem = 1.0f - telemetry.probContaminated;
+      telemetry.probCaution = rem * 0.8f;
+      telemetry.probSafe = rem * 0.2f;
+    } else if (telemetry.finalStatus == CLASS_CAUTION) {
+      float effectiveContamProb = fmaxf(mlContamProb, 0.45f);
+      telemetry.probContaminated = effectiveContamProb;
+      float rem = 1.0f - telemetry.probContaminated;
+      telemetry.probCaution = rem * 0.7f;
+      telemetry.probSafe = rem * 0.3f;
+    }
   } else {
     telemetry.failSafeTriggered = false;
     telemetry.finalStatus = telemetry.predictedClass;

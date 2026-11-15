@@ -23,10 +23,12 @@ static uint32_t lastTouchMs = 0;
 static uint32_t animFrame = 0;
 static bool isTouching = false; // Edge-triggered debounce flag
 
-// Banner Overlay Timer
+// Banner Overlay Timer & Mode
+enum BannerType { BANNER_NONE, BANNER_BASELINE_SAVED, BANNER_OFFSETS_RESET };
+static BannerType currentBanner = BANNER_NONE;
 static uint32_t bannerActiveUntil = 0;
 
-// Long-Press Tracking for Touch Calibration
+// Long-Press Tracking for Offset Reset on CAL/ZERO
 static uint32_t calPressStartMs = 0;
 static bool calPressActive = false;
 
@@ -416,8 +418,13 @@ static void renderDashboardView(const WaterTelemetry &telemetry) {
 
   // Card 0: pH
   snprintf(bufVal, sizeof(bufVal), "%.2f", telemetry.pH);
-  snprintf(bufSub, sizeof(bufSub), (telemetry.pH < 6.5f) ? "Acidic" : (telemetry.pH > 8.5f) ? "Alkali" : "Normal");
-  renderParameterCard(6, 34, 88, 76, 0, bufVal, bufSub, getPhColor(telemetry.pH));
+  if (telemetry.phStandby) {
+    snprintf(bufSub, sizeof(bufSub), "Standby");
+  } else {
+    snprintf(bufSub, sizeof(bufSub), (telemetry.pH < 6.5f) ? "Acidic" : (telemetry.pH > 8.5f) ? "Alkali" : "Normal");
+  }
+  uint16_t phColor = telemetry.phStandby ? UI_COLOR_GRAY : getPhColor(telemetry.pH);
+  renderParameterCard(6, 34, 88, 76, 0, bufVal, bufSub, phColor);
 
   // Card 1: TDS
   snprintf(bufVal, sizeof(bufVal), "%.0f", telemetry.tdsPpm);
@@ -426,8 +433,13 @@ static void renderDashboardView(const WaterTelemetry &telemetry) {
 
   // Card 2: Turbidity
   snprintf(bufVal, sizeof(bufVal), "%.1f", telemetry.turbNTU);
-  snprintf(bufSub, sizeof(bufSub), (telemetry.turbNTU > 5.0f) ? "Turbid NTU" : "Clear NTU");
-  renderParameterCard(6, 116, 88, 76, 2, bufVal, bufSub, getTurbColor(telemetry.turbNTU));
+  if (telemetry.turbStandby) {
+    snprintf(bufSub, sizeof(bufSub), "Standby");
+  } else {
+    snprintf(bufSub, sizeof(bufSub), (telemetry.turbNTU > 5.0f) ? "Turbid NTU" : "Clear NTU");
+  }
+  uint16_t turbColor = telemetry.turbStandby ? UI_COLOR_GRAY : getTurbColor(telemetry.turbNTU);
+  renderParameterCard(6, 116, 88, 76, 2, bufVal, bufSub, turbColor);
 
   // Card 3: Temperature (Interactive Quick-Adjust)
   snprintf(bufVal, sizeof(bufVal), "%.1f C", telemetry.tempC);
@@ -491,10 +503,12 @@ static void renderRawView(const WaterTelemetry &telemetry) {
   tft.printf("TDS Sensor (GPIO 34):      %.3f V  -->  %.0f ppm", telemetry.rawTdsV, telemetry.tdsPpm);
 
   tft.setCursor(14, 69);
-  tft.printf("Turbidity TS-300B (VP/36):  %.3f V  -->  %.1f NTU", telemetry.rawTurbV, telemetry.turbNTU);
+  tft.printf("Turbidity TS-300B (VP/36):  %.3f V  -->  %.1f NTU %s", 
+             telemetry.rawTurbV, telemetry.turbNTU, telemetry.turbStandby ? "[STBY]" : "");
 
   tft.setCursor(14, 82);
-  tft.printf("pH Probe (GPIO 35):        %.3f V  -->  %.2f pH", telemetry.rawPhV, telemetry.pH);
+  tft.printf("pH Probe (GPIO 35):        %.3f V  -->  %.2f pH %s", 
+             telemetry.rawPhV, telemetry.pH, telemetry.phStandby ? "[STBY]" : "");
 
   float compFactor = 1.0f + 0.02f * (telemetry.tempC - 25.0f);
   tft.setCursor(14, 95);
@@ -522,10 +536,18 @@ static void renderRawView(const WaterTelemetry &telemetry) {
   tft.setCursor(68, 149);
   tft.print("RECAL TOUCH (Tap to Calibrate)");
 
-  // Calibration Info
+  // 4. Calibration Offsets & Reset Button (x: 14 to 304, y: 168 to 188)
   tft.setTextColor(UI_COLOR_SAFE, UI_COLOR_CARD);
   tft.setCursor(14, 173);
-  tft.printf("Active Zero Offsets: TDS=%.0f ppm | Turb=%.1f NTU", telemetry.tdsOffset, telemetry.turbOffset);
+  tft.printf("Offsets: TDS=%.0f | Turb=%.1f", telemetry.tdsOffset, telemetry.turbOffset);
+
+  // [ RESET ] touch button in RAW view
+  tft.fillRoundRect(232, 168, 72, 20, 3, UI_COLOR_BG);
+  tft.drawRoundRect(232, 168, 72, 20, 3, UI_COLOR_ALERT);
+  tft.setTextColor(UI_COLOR_ALERT, UI_COLOR_BG);
+  tft.setTextSize(1);
+  tft.setCursor(244, 174);
+  tft.print("RESET");
 }
 
 // ============================================================================
@@ -673,15 +695,27 @@ void ui_render(const WaterTelemetry &telemetry) {
 
   // Render Confirmation Banner Overlay if active
   if (millis() < bannerActiveUntil) {
-    tft.fillRoundRect(35, 92, 250, 48, 6, UI_COLOR_SAFE);
-    tft.drawRoundRect(35, 92, 250, 48, 6, UI_COLOR_WHITE);
-    tft.setTextColor(UI_COLOR_BG, UI_COLOR_SAFE);
-    tft.setTextSize(2);
-    tft.setCursor(55, 98);
-    tft.print("BASELINE SAVED!");
-    tft.setTextSize(1);
-    tft.setCursor(55, 122);
-    tft.printf("Offsets Stored: TDS=0 | Turb=0");
+    if (currentBanner == BANNER_OFFSETS_RESET) {
+      tft.fillRoundRect(35, 92, 250, 48, 6, UI_COLOR_ALERT);
+      tft.drawRoundRect(35, 92, 250, 48, 6, UI_COLOR_WHITE);
+      tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_ALERT);
+      tft.setTextSize(2);
+      tft.setCursor(55, 98);
+      tft.print("OFFSETS RESET!");
+      tft.setTextSize(1);
+      tft.setCursor(55, 122);
+      tft.print("Offsets Cleared: TDS=0 | Turb=0");
+    } else {
+      tft.fillRoundRect(35, 92, 250, 48, 6, UI_COLOR_SAFE);
+      tft.drawRoundRect(35, 92, 250, 48, 6, UI_COLOR_WHITE);
+      tft.setTextColor(UI_COLOR_BG, UI_COLOR_SAFE);
+      tft.setTextSize(2);
+      tft.setCursor(55, 98);
+      tft.print("BASELINE SAVED!");
+      tft.setTextSize(1);
+      tft.setCursor(55, 122);
+      tft.printf("Offsets Stored: TDS=%.0f | Turb=%.1f", telemetry.tdsOffset, telemetry.turbOffset);
+    }
   }
 }
 
@@ -703,15 +737,24 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
 
     uint32_t now = millis();
 
-    // Check if user is holding Button 3 (CAL / ZERO) for long-press calibration (> 2 sec)
+    // Check if user is holding Button 3 (CAL / ZERO) for long-press offset reset (> 1.5 sec)
     if (ty >= 195 && ty <= 240 && tx >= 162 && tx <= 238) {
       if (!calPressActive) {
         calPressActive = true;
         calPressStartMs = now;
-      } else if (now - calPressStartMs >= 2000) {
+      } else if (now - calPressStartMs >= 1500) {
         calPressActive = false;
         isTouching = true;
-        ui_run_touch_calibration();
+        sensors_reset_offsets(telemetry);
+        currentBanner = BANNER_OFFSETS_RESET;
+        bannerActiveUntil = millis() + 1800;
+        tft.fillRoundRect(162, 202, 76, 34, 4, UI_COLOR_ALERT);
+        tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_ALERT);
+        tft.setTextSize(1);
+        tft.setCursor(174, 215);
+        tft.print("RESET!");
+        delay(100);
+        renderTouchBar(telemetry);
         return;
       }
     } else {
@@ -796,14 +839,28 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
         ui_cycle_language();
         return;
       }
-      // Recalibrate Touch Button (x: 14 to 304, y: 140 to 170)
-      else if (tx >= 14 && tx <= 304 && ty >= 140 && ty <= 170) {
+      // Recalibrate Touch Button (x: 14 to 304, y: 140 to 166)
+      else if (tx >= 14 && tx <= 304 && ty >= 140 && ty <= 166) {
         tft.fillRoundRect(14, 142, 290, 24, 3, UI_COLOR_ALERT);
         tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_ALERT);
         tft.setCursor(68, 149);
         tft.print("ENTERING CALIBRATION...");
         delay(120);
         ui_run_touch_calibration();
+        return;
+      }
+      // Reset Offsets Button in RAW view (x: 230 to 306, y: 166 to 190)
+      else if (tx >= 230 && tx <= 306 && ty >= 166 && ty <= 190) {
+        sensors_reset_offsets(telemetry);
+        currentBanner = BANNER_OFFSETS_RESET;
+        bannerActiveUntil = millis() + 1500;
+        tft.fillRoundRect(232, 168, 72, 20, 3, UI_COLOR_ALERT);
+        tft.setTextColor(UI_COLOR_WHITE, UI_COLOR_ALERT);
+        tft.setTextSize(1);
+        tft.setCursor(244, 174);
+        tft.print("RESET!");
+        delay(90);
+        renderRawView(telemetry);
         return;
       }
     }
@@ -841,6 +898,7 @@ void ui_handle_touch(WaterTelemetry &telemetry, bool &simSpikeActive) {
       // Button 3: Calibrate Zero (Short tap) (x: 162 to 238)
       else if (tx >= 162 && tx <= 238) {
         sensors_calibrate_zero(telemetry);
+        currentBanner = BANNER_BASELINE_SAVED;
         bannerActiveUntil = millis() + 1500;
         tft.fillRoundRect(162, 202, 76, 34, 4, UI_COLOR_SAFE);
         tft.setTextColor(UI_COLOR_BG, UI_COLOR_SAFE);
