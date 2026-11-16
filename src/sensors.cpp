@@ -9,10 +9,11 @@
 static OneWire oneWire(PIN_TEMP_DS18B20);
 static DallasTemperature tempSensor(&oneWire);
 
-// Persistent Calibration Offsets
+// Persistent Calibration Offsets & Dynamic Baselines
 static float g_tdsZeroOffset = 0.0f;
 static float g_turbZeroOffset = 0.0f;
 static float g_vPhNeutral = PH_NEUTRAL_CAL_DEFAULT; // 2.50f default neutral reference
+float v_turb_clean = 4.00f;                         // Global clean-water reference voltage
 static float g_simFallbackTempC = 25.0f;
 
 // 18650 Battery State
@@ -30,6 +31,16 @@ float sensors_get_ph_neutral() {
   return g_vPhNeutral;
 }
 
+void sensors_set_turb_clean(float vClean) {
+  if (vClean >= 1.00f && vClean <= 5.00f) {
+    v_turb_clean = vClean;
+  }
+}
+
+float sensors_get_turb_clean() {
+  return v_turb_clean;
+}
+
 void sensors_cycle_sim_temp() {
   if (g_simFallbackTempC == 20.0f) g_simFallbackTempC = 25.0f;
   else if (g_simFallbackTempC == 25.0f) g_simFallbackTempC = 30.0f;
@@ -42,30 +53,46 @@ float sensors_get_sim_temp() {
 }
 
 // ============================================================================
-// NVS FLASH PERSISTENCE FOR CALIBRATION OFFSETS
+// NVS FLASH PERSISTENCE FOR CALIBRATION OFFSETS & BASELINES
 // ============================================================================
 void sensors_load_offsets_from_nvs() {
   Preferences prefs;
-  if (prefs.begin("jalrakshak", true)) { // read-only mode
-    g_tdsZeroOffset = prefs.getFloat("tdsOff", 0.0f);
-    g_turbZeroOffset = prefs.getFloat("turbOff", 0.0f);
-    g_vPhNeutral = prefs.getFloat("phNeut", PH_NEUTRAL_CAL_DEFAULT);
+  // Primary calibration storage: namespace "jal_cal"
+  if (prefs.begin("jal_cal", false)) {
+    v_turb_clean = prefs.getFloat("turb_base", 0.0f);
+    g_vPhNeutral = prefs.getFloat("ph_neutral", PH_NEUTRAL_CAL_DEFAULT);
     prefs.end();
-    Serial.printf("[NVS] Loaded Sensor Offsets: TDS=%.1f ppm, Turb=%.2f NTU, pH Neutral=%.3f V\n",
-                  g_tdsZeroOffset, g_turbZeroOffset, g_vPhNeutral);
   }
+  // Secondary fallback storage: namespace "jalrakshak"
+  if (prefs.begin("jalrakshak", true)) {
+    g_tdsZeroOffset = prefs.getFloat("tdsOff", 0.0f);
+    if (v_turb_clean <= 0.0f) {
+      v_turb_clean = prefs.getFloat("turb_base", 0.0f);
+    }
+    if (g_vPhNeutral == PH_NEUTRAL_CAL_DEFAULT) {
+      g_vPhNeutral = prefs.getFloat("phNeut", PH_NEUTRAL_CAL_DEFAULT);
+    }
+    prefs.end();
+  }
+  Serial.printf("[NVS] Loaded Calibration: TDS Off=%.1f ppm, Turb Clean Base=%.3f V, pH Neutral=%.3f V\n",
+                g_tdsZeroOffset, v_turb_clean, g_vPhNeutral);
 }
 
 void sensors_save_offsets_to_nvs() {
   Preferences prefs;
-  if (prefs.begin("jalrakshak", false)) { // read-write mode
+  if (prefs.begin("jal_cal", false)) {
+    prefs.putFloat("turb_base", v_turb_clean);
+    prefs.putFloat("ph_neutral", g_vPhNeutral);
+    prefs.end();
+  }
+  if (prefs.begin("jalrakshak", false)) {
     prefs.putFloat("tdsOff", g_tdsZeroOffset);
-    prefs.putFloat("turbOff", g_turbZeroOffset);
+    prefs.putFloat("turb_base", v_turb_clean);
     prefs.putFloat("phNeut", g_vPhNeutral);
     prefs.end();
-    Serial.printf("[NVS] Stored Sensor Offsets: TDS=%.1f ppm, Turb=%.2f NTU, pH Neutral=%.3f V\n",
-                  g_tdsZeroOffset, g_turbZeroOffset, g_vPhNeutral);
   }
+  Serial.printf("[NVS] Stored Calibration: TDS Off=%.1f ppm, Turb Clean Base=%.3f V, pH Neutral=%.3f V\n",
+                g_tdsZeroOffset, v_turb_clean, g_vPhNeutral);
 }
 
 // ============================================================================
@@ -140,6 +167,7 @@ void sensors_read(WaterTelemetry &telemetry, bool simSpikeActive) {
   telemetry.isSimSpike = simSpikeActive;
   telemetry.tdsOffset = g_tdsZeroOffset;
   telemetry.turbOffset = g_turbZeroOffset;
+  telemetry.vTurbClean = v_turb_clean;
   telemetry.sampleCount++;
   telemetry.timestampMs = millis();
 
@@ -202,12 +230,41 @@ void sensors_read(WaterTelemetry &telemetry, bool simSpikeActive) {
   // --------------------------------------------------------------------------
   float pinTurbV = sensors_read_adc_voltage(PIN_TURBIDITY, 32);
   telemetry.pinTurbV = pinTurbV;
-  float v_turb = pinTurbV * TURB_DIVIDER_RATIO;
-  telemetry.rawTurbV = v_turb;
-  telemetry.turbStandby = false; // No strict standby freeze
+  float rawTurbV = pinTurbV * TURB_DIVIDER_RATIO; // 1.50f
 
-  // Map v_turb from clean water baseline (>= 4.0f V = 0 NTU) down to 2.5f V (3000 NTU)
-  telemetry.turbNTU = calc_turbidity_ntu(v_turb, g_turbZeroOffset);
+  // Apply exponential moving average filter (alpha = 0.15f) to smooth ADC jitter
+  static float s_turbEma = -1.0f;
+  if (s_turbEma < 0.0f) {
+    s_turbEma = rawTurbV;
+  } else {
+    s_turbEma = (0.15f * rawTurbV) + (0.85f * s_turbEma);
+  }
+  float v_turb = s_turbEma;
+  telemetry.rawTurbV = v_turb;
+  telemetry.turbStandby = false;
+
+  // Relative Ratio NTU Mapping based on drop relative to v_turb_clean
+  float ntu = 0.0f;
+  if (v_turb >= (v_turb_clean - 0.04f)) {
+    // Within tiny natural ripple of clean water reference -> report 0.0 to 1.5 NTU
+    if (v_turb >= v_turb_clean) {
+      ntu = 0.0f;
+    } else {
+      float rippleFraction = (v_turb_clean - v_turb) / 0.04f;
+      ntu = rippleFraction * 1.5f;
+    }
+  } else {
+    // Drops below clean baseline down to v_turb_min = 1.00V (opaque muddy water)
+    const float v_turb_min = 1.00f;
+    float denom = v_turb_clean - v_turb_min;
+    if (denom < 0.40f) denom = 0.40f; // Guard against small denominator
+    float drop_ratio = (v_turb_clean - v_turb) / denom;
+    drop_ratio = constrain(drop_ratio, 0.0f, 1.0f);
+    // Smooth quadratic curve: ntu = (drop_ratio^2 * 2800) + (drop_ratio * 200)
+    ntu = (drop_ratio * drop_ratio * 2800.0f) + (drop_ratio * 200.0f);
+  }
+  ntu = constrain(ntu, 0.0f, 3000.0f);
+  telemetry.turbNTU = ntu;
 
   // --------------------------------------------------------------------------
   // 5. ANALOG pH (GPIO 35 / D35 / ADC1_CH7 - 5.0V with 10k/20k Divider, Ratio = 1.50f)
@@ -261,26 +318,29 @@ void sensors_read(WaterTelemetry &telemetry, bool simSpikeActive) {
 }
 
 // ============================================================================
-// ZERO CALIBRATION (Sets Clean Tap Water Offset & Persists to NVS)
+// ZERO CALIBRATION (Sets Clean Tap Water Reference & Persists to NVS)
 // ============================================================================
 void sensors_calibrate_zero(WaterTelemetry &telemetry) {
-  // Store un-offset physical metrics as zero offsets
+  // 1. Capture current filtered v_turb on GPIO 36 as the new v_turb_clean (0.0 NTU baseline)
+  if (telemetry.rawTurbV >= 1.00f && telemetry.rawTurbV <= 4.80f) {
+    v_turb_clean = telemetry.rawTurbV;
+  }
+  telemetry.vTurbClean = v_turb_clean;
+  telemetry.turbNTU = 0.0f;
+
+  // 2. Capture current pH neutral voltage calibration (pH 7.0)
+  g_vPhNeutral = telemetry.rawPhV;
+  telemetry.pH = 7.00f;
+
+  // 3. Store TDS zero offset
   float rawPpm = calc_tds_ppm(telemetry.rawTdsV, telemetry.tempC, 0.0f);
   g_tdsZeroOffset = rawPpm;
   telemetry.tdsOffset = g_tdsZeroOffset;
   telemetry.tdsPpm = 0.0f;
 
-  g_turbZeroOffset = 0.0f;
-  telemetry.turbOffset = 0.0f;
-  telemetry.turbNTU = 0.0f;
-
-  // Update pH neutral voltage calibration to current rawPhV
-  g_vPhNeutral = telemetry.rawPhV;
-  telemetry.pH = 7.00f;
-
   sensors_save_offsets_to_nvs();
-  Serial.printf("[NVS] Zero Calibrated: TDS Offset=%.1f ppm, pH Neutral=%.3f V\n",
-                g_tdsZeroOffset, g_vPhNeutral);
+  Serial.printf("[CAL] Zero Calibration Saved: Turb Clean Base=%.3f V, pH Neutral=%.3f V, TDS Off=%.1f ppm\n",
+                v_turb_clean, g_vPhNeutral, g_tdsZeroOffset);
 }
 
 // ============================================================================
@@ -289,10 +349,12 @@ void sensors_calibrate_zero(WaterTelemetry &telemetry) {
 void sensors_reset_offsets(WaterTelemetry &telemetry) {
   g_tdsZeroOffset = 0.0f;
   g_turbZeroOffset = 0.0f;
+  v_turb_clean = 4.00f; // Default clean baseline
   g_vPhNeutral = PH_NEUTRAL_CAL_DEFAULT;
   telemetry.tdsOffset = 0.0f;
   telemetry.turbOffset = 0.0f;
+  telemetry.vTurbClean = v_turb_clean;
 
   sensors_save_offsets_to_nvs();
-  Serial.println("[NVS] Sensor Offsets Cleared to Defaults (pH Neutral = 2.50V)");
+  Serial.println("[NVS] Calibration Reset to Defaults (Turb Base=4.00V, pH Neutral=2.50V, TDS Off=0.0)");
 }

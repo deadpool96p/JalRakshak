@@ -65,6 +65,7 @@ struct WaterTelemetry {
   float rawTdsV;            // Reconstructed sensor voltage (pinTdsV * TDS_DIVIDER_RATIO)
   float rawTurbV;           // Reconstructed sensor voltage (pinTurbV * TURB_DIVIDER_RATIO)
   float rawPhV;             // Reconstructed sensor voltage (pinPhV * PH_DIVIDER_RATIO)
+  float vTurbClean;         // Dynamic clean water baseline voltage for 0.0 NTU reference
   bool  tempConnected;
   bool  turbStandby;        // Standby flag
   bool  phStandby;          // Standby flag
@@ -91,8 +92,10 @@ struct WaterTelemetry {
 };
 
 // ============================================================================
-// PUBLIC FUNCTIONS
+// PUBLIC FUNCTIONS & CALIBRATION GLOBALS
 // ============================================================================
+extern float v_turb_clean;
+
 void sensors_init();
 void sensors_read(WaterTelemetry &telemetry, bool simSpikeActive);
 void sensors_calibrate_zero(WaterTelemetry &telemetry);
@@ -102,6 +105,8 @@ void sensors_save_offsets_to_nvs();
 float sensors_get_tds_offset();
 float sensors_get_turb_offset();
 float sensors_get_ph_neutral();
+void sensors_set_turb_clean(float vClean);
+float sensors_get_turb_clean();
 float sensors_read_adc_voltage(int pin, int samples = 32);
 float sensors_calc_bat_percent(float volts);
 void sensors_cycle_sim_temp();

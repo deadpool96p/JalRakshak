@@ -589,7 +589,7 @@ static void renderRawView(const WaterTelemetry &telemetry) {
   // 5. Calibration Offsets & Reset Button (x: 14 to 304, y: 168 to 188)
   tft.setTextColor(UI_COLOR_SAFE, UI_COLOR_CARD);
   tft.setCursor(14, 173);
-  tft.printf("Offsets: TDS=%.0f | Turb=%.1f", telemetry.tdsOffset, telemetry.turbOffset);
+  tft.printf("TDS Off=%.0f | TurbBase=%.2fV", telemetry.tdsOffset, telemetry.vTurbClean);
 
   // [ RESET ] touch button in RAW view
   tft.fillRoundRect(232, 168, 72, 20, 3, UI_COLOR_BG);

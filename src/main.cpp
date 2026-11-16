@@ -2,6 +2,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
+#include <Preferences.h>
 
 #include "sensors.h"
 #include "tinyml_engine.h"
@@ -150,6 +151,34 @@ void setup() {
   sensors_init();
   Serial.println("[OK] Sensors initialized on GPIO 4, 34, 36, 35, 39.");
 
+  // Check & configure dynamic clean-water turbidity baseline ("jal_cal", key "turb_base")
+  Preferences calPrefs;
+  calPrefs.begin("jal_cal", false);
+  float savedTurbBase = 0.0f;
+  if (calPrefs.isKey("turb_base")) {
+    savedTurbBase = calPrefs.getFloat("turb_base", 0.0f);
+  }
+
+  // Sample initial voltage on GPIO 36 (VP)
+  float initPin36V = sensors_read_adc_voltage(PIN_TURBIDITY, 32);
+  float initTurbV = initPin36V * TURB_DIVIDER_RATIO;
+
+  if (savedTurbBase >= 1.00f && savedTurbBase <= 4.80f) {
+    v_turb_clean = savedTurbBase;
+    Serial.printf("[NVS] Loaded saved clean turbidity baseline: %.3f V\n", v_turb_clean);
+  } else {
+    // If no saved NVS value exists (or if initial clean water voltage is in range 1.80f - 4.60f)
+    if (initTurbV >= 1.80f && initTurbV <= 4.60f) {
+      v_turb_clean = initTurbV;
+    } else {
+      v_turb_clean = (initTurbV > 0.5f) ? initTurbV : 4.00f;
+    }
+    calPrefs.putFloat("turb_base", v_turb_clean);
+    Serial.printf("[NVS] Initialized dynamic clean turbidity baseline: %.3f V\n", v_turb_clean);
+  }
+  calPrefs.end();
+  sensors_set_turb_clean(v_turb_clean);
+
   // Initialize TinyML Neural Network Engine
   tinyml_init();
   Serial.println("[OK] TinyML 4->16->12->3 Neural Network Engine ready.");
@@ -228,15 +257,17 @@ void loop() {
   }
 
   // 4. 1-Second Serial Diagnostic Output (115200 Baud)
+  // Prints both live v_turb and clean baseline v_turb_clean
   static uint32_t lastDiagMs = 0;
   if (now - lastDiagMs >= 1000) {
     lastDiagMs = now;
-    Serial.printf("[DIAG] Temp: %.1fC | TDS(34): %.2fV (%.0f ppm) | Turb(36): pin=%.2fV->sens=%.2fV (%.0f NTU) | pH(35): pin=%.2fV->sens=%.2fV (%.2f pH) | Bat(39): pin=%.2fV->bat=%.2fV (%.0f%%) | LEDs: R=%d G=%d B=%d\n",
+    Serial.printf("[DIAG] Temp: %.1fC | TDS(34): %.2fV (%.0f ppm) | Turb(36): pin=%.2fV->sens=%.2fV (base=%.2fV -> %.1f NTU) | pH(35): pin=%.2fV->sens=%.2fV (%.2f pH) | Bat(39): pin=%.2fV->bat=%.2fV (%.0f%%) | LEDs: R=%d G=%d B=%d\n",
       uiSnapshot.tempC,
       uiSnapshot.pinTdsV,
       uiSnapshot.tdsPpm,
       uiSnapshot.pinTurbV,
       uiSnapshot.rawTurbV,
+      uiSnapshot.vTurbClean,
       uiSnapshot.turbNTU,
       uiSnapshot.pinPhV,
       uiSnapshot.rawPhV,
