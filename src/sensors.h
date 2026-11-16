@@ -15,22 +15,25 @@
 // ============================================================================
 // SENSOR TOGGLES & CONSTANTS
 // ============================================================================
-#define PH_SENSOR_CONNECTED false   // Set to true when physical pH probe is attached
-#define PH_DEFAULT_VALUE    7.10f   // Baseline neutral pH when probe toggle is false
+#define PH_SENSOR_CONNECTED true    // Physical pH probe enabled
+#define PH_DEFAULT_VALUE    7.00f   // Baseline neutral pH
+#define PH_NEUTRAL_CAL_DEFAULT 2.50f // Default neutral voltage (reconstructed 5V module output)
 
 // Voltage Divider Ratios
-// 10k + 20k resistor divider to scale 5.0V max output down to 3.3V ESP32 ADC (Ratio = 1.50x)
-#define TURB_VOLTAGE_SCALE  1.50f   // Multiplier for TS-300B Turbidity divider on VP (GPIO 36)
-#define PH_VOLTAGE_SCALE    1.50f   // Multiplier for PH-4502C pH divider on D35 (GPIO 35)
+#define TDS_DIVIDER_RATIO   1.00f   // 3.3V direct, no divider on D34 (GPIO 34)
+#define PH_DIVIDER_RATIO    1.50f   // 10k + 20k resistor divider on D35 (GPIO 35)
+#define TURB_DIVIDER_RATIO  1.50f   // 10k + 20k resistor divider on VP (GPIO 36)
+#define BAT_DIVIDER_RATIO   2.00f   // 100k + 100k resistor divider on VN (GPIO 39)
 
-// 18650 Battery Monitor (Switched 100k + 100k divider + 0.1uF filter cap on VN / GPIO 39)
-#define BAT_DIVIDER_RATIO   2.00f   // (100k + 100k) / 100k = 2.00x multiplier
+// Compatibility aliases
+#define TURB_VOLTAGE_SCALE  TURB_DIVIDER_RATIO
+#define PH_VOLTAGE_SCALE    PH_DIVIDER_RATIO
+
+// 18650 Battery Monitor Constants
 #define BAT_CAL_OFFSET      0.00f   // Benchmark calibration voltage offset
 #define BAT_MIN_DETECT_V    2.60f   // Threshold below which device is running on USB power (switch OFF)
-
-// Unplugged / Floating Sensor Guard Voltage Threshold (measured at physical ESP32 pin before scaling)
-// A disconnected wire or un-submerged probe reading < 0.25V is placed in safe Standby mode
-#define SENSOR_UNPLUGGED_VOLTAGE_THRESHOLD 0.25f
+#define BAT_VOLTS_MIN       3.20f   // 3.20V -> 0%
+#define BAT_VOLTS_MAX       4.20f   // 4.20V -> 100%
 
 // Calibration and IS 10500 Safety Limits
 #define IS10500_PH_MIN        6.50f
@@ -54,14 +57,17 @@ struct WaterTelemetry {
   bool  batConnected;
   bool  lowBatAlertTriggered;
 
-  // Raw Diagnostic Values
-  float rawTdsV;
-  float rawTurbV;
-  float rawPhV;
+  // Raw Diagnostic Values (both physical pin voltage and reconstructed sensor voltage)
+  float pinTdsV;
+  float pinTurbV;
+  float pinPhV;
   float rawBatPinV;
+  float rawTdsV;            // Reconstructed sensor voltage (pinTdsV * TDS_DIVIDER_RATIO)
+  float rawTurbV;           // Reconstructed sensor voltage (pinTurbV * TURB_DIVIDER_RATIO)
+  float rawPhV;             // Reconstructed sensor voltage (pinPhV * PH_DIVIDER_RATIO)
   bool  tempConnected;
-  bool  turbStandby;        // True if VP raw voltage < 0.25V (unplugged/standby)
-  bool  phStandby;          // True if D35 raw voltage < 0.25V or PH_SENSOR_CONNECTED is false
+  bool  turbStandby;        // Standby flag
+  bool  phStandby;          // Standby flag
   bool  isSimSpike;
 
   // TinyML Edge AI Outputs
@@ -95,6 +101,7 @@ void sensors_load_offsets_from_nvs();
 void sensors_save_offsets_to_nvs();
 float sensors_get_tds_offset();
 float sensors_get_turb_offset();
+float sensors_get_ph_neutral();
 float sensors_read_adc_voltage(int pin, int samples = 32);
 float sensors_calc_bat_percent(float volts);
 void sensors_cycle_sim_temp();

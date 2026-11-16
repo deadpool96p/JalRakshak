@@ -54,30 +54,27 @@ static void handleWebControlAction(const String &action) {
 }
 
 // ============================================================================
-// CORE 0 TASK: 20ms BASE SCHEDULER (Web Server, Status LEDs, Audio, Sensor/ML)
+// CORE 0 TASK: 20ms BASE SCHEDULER (Web Server, Audio Engine, Sensor/ML)
 // ============================================================================
 void sensorTinyMLTask(void *pvParameters) {
   WaterTelemetry localTelemetry;
   memset(&localTelemetry, 0, sizeof(WaterTelemetry));
 
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xBaseTick = pdMS_TO_TICKS(20); // 20 ms fast base tick for Web & LEDs
+  const TickType_t xBaseTick = pdMS_TO_TICKS(20); // 20 ms fast base tick for Web & Audio
 
   uint32_t tickCounter = 0;
 
-  Serial.println("[CORE 0] Fast 20ms Web/LED Scheduler & 500ms Sensor/ML Task started.");
+  Serial.println("[CORE 0] Fast 20ms Web Scheduler & 500ms Sensor/ML Task started.");
 
   for (;;) {
     // 1. Instant 20ms Web Server & DNS Captive Portal Handler
     web_dashboard_tick();
 
-    // 2. Instant 20ms Hardware Status LED & Activity Pulse State Machine
-    status_leds_tick();
-
-    // 3. Audio Housekeeping Hook
+    // 2. Audio Housekeeping Hook
     audio_tick();
 
-    // 4. Sensor & TinyML Pipeline every 25th tick (25 * 20 ms = 500 ms / 2 Hz)
+    // 3. Sensor & TinyML Pipeline every 25th tick (25 * 20 ms = 500 ms / 2 Hz)
     tickCounter++;
     if (tickCounter >= 25) {
       tickCounter = 0;
@@ -88,10 +85,6 @@ void sensorTinyMLTask(void *pvParameters) {
 
       // Run Edge AI Neural Network Inference & IS 10500 Guardrail Verification
       tinyml_infer(localTelemetry);
-
-      // Update Hardware Status LEDs (Green/Red) & Pulse Blue Activity LED
-      status_leds_set_status(localTelemetry.finalStatus);
-      status_leds_pulse_blue(40);
 
       // Update Asynchronous Audio State Engine (Confirmation Chimes & Alarms)
       audio_update_state(localTelemetry.finalStatus);
@@ -104,21 +97,11 @@ void sensorTinyMLTask(void *pvParameters) {
       // Update Web Dashboard Telemetry Snapshot
       web_dashboard_update_telemetry(localTelemetry, simActive);
 
-      // Thread-Safe Mutex Lock to Update Shared State for Core 1 (UI)
+      // Thread-Safe Mutex Lock to Update Shared State for Core 1 (UI & Status LEDs)
       if (xSemaphoreTake(g_telemetryMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         memcpy(&g_sharedTelemetry, &localTelemetry, sizeof(WaterTelemetry));
         xSemaphoreGive(g_telemetryMutex);
       }
-
-      // Log Periodic Telemetry over Serial
-      Serial.printf("[TELEMETRY #%lu] pH: %.2f | TDS: %.0f ppm | Turb: %.1f NTU | Temp: %.1f C | Class: %d | Latency: %lu us\n",
-                    (unsigned long)localTelemetry.sampleCount,
-                    localTelemetry.pH,
-                    localTelemetry.tdsPpm,
-                    localTelemetry.turbNTU,
-                    localTelemetry.tempC,
-                    localTelemetry.finalStatus,
-                    (unsigned long)localTelemetry.inferenceTimeUs);
     }
 
     vTaskDelayUntil(&xLastWakeTime, xBaseTick);
@@ -129,27 +112,43 @@ void sensorTinyMLTask(void *pvParameters) {
 // SYSTEM SETUP
 // ============================================================================
 void setup() {
+  // 1. Explicitly initialize Status LED GPIOs as OUTPUT at the very start of setup()
+  pinMode(PIN_LED_GREEN, OUTPUT); // GPIO 33 (Green LED: SAFE / Drinkable)
+  pinMode(PIN_LED_RED, OUTPUT);   // GPIO 32 (Red LED: CONTAMINATED / Alert)
+  pinMode(PIN_LED_BLUE, OUTPUT);  // GPIO 27 (Blue LED: Heartbeat / TinyML / Wi-Fi)
+
+  // 2. Run 1-second Boot Self-Test: Red (32), Green (33), Blue (27) sequentially for 250ms each,
+  // then all HIGH together for 250ms so hardware operation is visually confirmed on every boot
+  digitalWrite(PIN_LED_RED, HIGH);   digitalWrite(PIN_LED_GREEN, LOW);  digitalWrite(PIN_LED_BLUE, LOW);  delay(250);
+  digitalWrite(PIN_LED_RED, LOW);    digitalWrite(PIN_LED_GREEN, HIGH); digitalWrite(PIN_LED_BLUE, LOW);  delay(250);
+  digitalWrite(PIN_LED_RED, LOW);    digitalWrite(PIN_LED_GREEN, LOW);  digitalWrite(PIN_LED_BLUE, HIGH); delay(250);
+  digitalWrite(PIN_LED_RED, HIGH);   digitalWrite(PIN_LED_GREEN, HIGH); digitalWrite(PIN_LED_BLUE, HIGH); delay(250);
+  digitalWrite(PIN_LED_RED, LOW);    digitalWrite(PIN_LED_GREEN, LOW);  digitalWrite(PIN_LED_BLUE, LOW);
+
+  // 3. Configure ADC1 Resolution (12-bit) and Attenuation (11dB)
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIN_TDS, ADC_11db);        // GPIO 34 (D34 / ADC1_CH6)
+  analogSetPinAttenuation(PIN_PH, ADC_11db);         // GPIO 35 (D35 / ADC1_CH7)
+  analogSetPinAttenuation(PIN_TURBIDITY, ADC_11db);  // GPIO 36 (VP / ADC1_CH0)
+  analogSetPinAttenuation(PIN_BATTERY, ADC_11db);    // GPIO 39 (VN / ADC1_CH3)
+
   Serial.begin(115200);
-  delay(100);
+  delay(50);
   Serial.println("\n==================================================");
   Serial.println("   JALRAKSHAK // ESP32 EDGE AI WATER MONITOR      ");
   Serial.println("   Dual-Core FreeRTOS + TinyML IS 10500 Guardrail ");
   Serial.println("==================================================");
 
-  // Initialize Mutex
+  // Initialize FreeRTOS Mutex
   g_telemetryMutex = xSemaphoreCreateMutex();
   if (g_telemetryMutex == NULL) {
     Serial.println("[ERROR] Failed to create FreeRTOS Telemetry Mutex!");
     while (1) delay(1000);
   }
 
-  // Initialize Hardware Status LEDs (GPIO 33 Green, GPIO 32 Red, GPIO 27 Blue)
-  status_leds_init();
-  Serial.println("[OK] Hardware Status LEDs ready on GPIO 33, 32, 27.");
-
   // Initialize Sensor Hardware (ADC1 & 1-Wire)
   sensors_init();
-  Serial.println("[OK] Sensors initialized on GPIO 4, 34, 36, 35.");
+  Serial.println("[OK] Sensors initialized on GPIO 4, 34, 36, 35, 39.");
 
   // Initialize TinyML Neural Network Engine
   tinyml_init();
@@ -183,7 +182,7 @@ void setup() {
 }
 
 // ============================================================================
-// CORE 1 TASK: UI RENDERING & TOUCH EVENT LOOP (~30 FPS / 33ms)
+// CORE 1 TASK: UI RENDERING, STATUS LEDS & TOUCH EVENT LOOP (~30 FPS / 33ms)
 // Arduino loop() automatically executes on Core 1
 // ============================================================================
 void loop() {
@@ -196,14 +195,67 @@ void loop() {
     xSemaphoreGive(g_telemetryMutex);
   }
 
-  // 2. Poll & Handle Touch Input (Debounced)
+  uint32_t now = millis();
+
+  // 2. Toggle Blue LED (GPIO 27) every 500 ms using a non-blocking millis() timer
+  int ledB = ((now / 500) % 2 == 0) ? 1 : 0;
+  digitalWrite(PIN_LED_BLUE, ledB ? HIGH : LOW);
+
+  // 3. Status LEDs State Machine (GPIO 33 Green, GPIO 32 Red)
+  // Always drive either Green (SAFE / POTABLE) or Red (WARNING / CONTAMINATED).
+  // Never leave both Green and Red LOW during normal or standby operation.
+  // Blink Red at 4 Hz (125ms HIGH / 125ms LOW) on critical contamination.
+  int ledG = 0;
+  int ledR = 0;
+  if (uiSnapshot.finalStatus == 0) {
+    // SAFE / POTABLE -> Green HIGH, Red LOW
+    ledG = 1;
+    ledR = 0;
+    digitalWrite(PIN_LED_GREEN, HIGH);
+    digitalWrite(PIN_LED_RED, LOW);
+  } else if (uiSnapshot.finalStatus == 2) {
+    // CRITICAL CONTAMINATION -> Green LOW, Blink Red at 4 Hz
+    ledG = 0;
+    ledR = ((now / 125) % 2 == 0) ? 1 : 0;
+    digitalWrite(PIN_LED_GREEN, LOW);
+    digitalWrite(PIN_LED_RED, ledR ? HIGH : LOW);
+  } else {
+    // WARNING / CAUTION -> Green LOW, Red HIGH
+    ledG = 0;
+    ledR = 1;
+    digitalWrite(PIN_LED_GREEN, LOW);
+    digitalWrite(PIN_LED_RED, HIGH);
+  }
+
+  // 4. 1-Second Serial Diagnostic Output (115200 Baud)
+  static uint32_t lastDiagMs = 0;
+  if (now - lastDiagMs >= 1000) {
+    lastDiagMs = now;
+    Serial.printf("[DIAG] Temp: %.1fC | TDS(34): %.2fV (%.0f ppm) | Turb(36): pin=%.2fV->sens=%.2fV (%.0f NTU) | pH(35): pin=%.2fV->sens=%.2fV (%.2f pH) | Bat(39): pin=%.2fV->bat=%.2fV (%.0f%%) | LEDs: R=%d G=%d B=%d\n",
+      uiSnapshot.tempC,
+      uiSnapshot.pinTdsV,
+      uiSnapshot.tdsPpm,
+      uiSnapshot.pinTurbV,
+      uiSnapshot.rawTurbV,
+      uiSnapshot.turbNTU,
+      uiSnapshot.pinPhV,
+      uiSnapshot.rawPhV,
+      uiSnapshot.pH,
+      uiSnapshot.rawBatPinV,
+      uiSnapshot.batVolts,
+      uiSnapshot.batPercent,
+      ledR, ledG, ledB
+    );
+  }
+
+  // 5. Poll & Handle Touch Input (Debounced)
   ui_handle_touch(uiSnapshot, simToggle);
   if (simToggle != g_simSpikeActive) {
     g_simSpikeActive = simToggle;
     Serial.printf("[UI] Mode switched: %s\n", g_simSpikeActive ? "SYNTHETIC SPIKE" : "LIVE SENSOR");
   }
 
-  // 3. Render Smooth 30 FPS Industrial Dashboard & Animated Sprite Waveform
+  // 6. Render Smooth 30 FPS Industrial Dashboard & Animated Sprite Waveform
   ui_render(uiSnapshot);
 
   // Maintain ~30 FPS UI refresh rate

@@ -33,13 +33,12 @@ inline float calc_tds_ppm(float rawVoltage, float tempC, float zeroOffsetPpm = 0
 // 2. TS-300B OPTICAL TURBIDITY (VP / GPIO 36) POLYNOMIAL TRANSFER FUNCTION
 // ----------------------------------------------------------------------------
 inline float calc_turbidity_ntu(float rawVoltage, float zeroOffsetNtu = 0.0f) {
-  // TS-300B characteristic: clean water yields high voltage (~3.8 - 4.2V).
-  // Particles scatter light, reducing phototransistor voltage.
-  if (rawVoltage >= 3.80f) {
-    return 0.5f; // Crystal clear drinking water (< 1.0 NTU IS 10500 standard)
+  // Clean water baseline (>= 4.0V = 0 NTU) down to 2.5V (3000 NTU)
+  if (rawVoltage >= 4.00f) {
+    return 0.0f;
   }
-  if (rawVoltage <= 2.20f) {
-    return 150.0f; // Saturated mud / severe industrial turbidity
+  if (rawVoltage <= 2.50f) {
+    return 3000.0f;
   }
 
   // Empirical quadratic polynomial for TS-300B
@@ -55,17 +54,10 @@ inline float calc_turbidity_ntu(float rawVoltage, float zeroOffsetNtu = 0.0f) {
 // ----------------------------------------------------------------------------
 // 3. PH-4502C ANALOG pH MODULE (GPIO 35) NERNSTIAN SLOPE & DRIFT CORRECTION
 // ----------------------------------------------------------------------------
-inline float calc_ph(float rawVoltage, float tempC, float neutralCalV = 2.50f, float acidCalV = 3.04f) {
-  // Calculate dynamic slope using pH 7.00 and pH 4.01 two-point calibration
-  // Slope = (V_4.01 - V_7.00) / (7.00 - 4.01) -> ~0.180 V per pH unit at 25°C
-  float baseSlope = (acidCalV - neutralCalV) / 2.99f;
-  if (baseSlope <= 0.05f) baseSlope = 0.180f; // Default fallback
-
-  // Thermal correction factor according to Nernst equation: Slope_T = Slope_25 * (T_K / 298.15)
-  float tempFactor = (tempC + 273.15f) / 298.15f;
-  float activeSlope = baseSlope * tempFactor;
-
-  float ph = 7.00f + ((neutralCalV - rawVoltage) / activeSlope);
+inline float calc_ph(float rawVoltage, float tempC = 25.0f, float neutralCalV = 2.50f) {
+  // Live pH calculation: ph_val = 7.0f + ((v_ph_neutral - v_ph) / 0.18f)
+  (void)tempC; // Preserved for API compatibility
+  float ph = 7.00f + ((neutralCalV - rawVoltage) / 0.18f);
   if (ph < 0.0f)  ph = 0.0f;
   if (ph > 14.0f) ph = 14.0f;
   return ph;
